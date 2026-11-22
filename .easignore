@@ -1,0 +1,100 @@
+# EAS uploads this project archive instead of applying .gitignore.
+.git/
+
+# dependencies
+node_modules/
+
+# local tooling and cloud credentials (not application source)
+.aws/
+.codex/
+.agents/
+
+# local environment and credentials
+.env*
+!.env.example
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# macOS
+.DS_Store
+*.pem
+
+# local env files
+.env*.local
+
+# typescript
+*.tsbuildinfo
+
+# build and test output
+coverage/
+build/
+
+example
+
+# generated native folders
+/ios
+/android
+
+# Private reading documents and app data. Preserve the repository's fixture exception,
+# then exclude all PDFs from the cloud archive below.
+*.pdf
+!assets/fixtures/*.pdf
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*-wal
+*-shm
+/hyggewick-library/
+documents.json
+*.books.json
+*.library.json
+*.bak
+*.backup
+*.dump
+
+# Local diagnostics and temporary files
+*.log
+*.log.*
+*.tmp
+*.temp
+*.swp
+*.swo
+/logs/
+/tmp/
+/temp/
+/.local-data/
+/.private-data/
+
+# Android signing keys
+*.keystore
+
+# Development-only editor and CI metadata
+.vscode/
+.idea/
+.github/
+
+# Never send PDF content to EAS, including any local test fixtures.
+*.pdf

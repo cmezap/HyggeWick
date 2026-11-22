@@ -3,6 +3,11 @@
 # dependencies
 node_modules/
 
+# local tooling and cloud credentials (not application source)
+.aws/
+.codex/
+.agents/
+
 # local environment and credentials
 .env*
 !.env.example
@@ -49,3 +54,37 @@ example
 # generated native folders
 /ios
 /android
+
+# Private reading documents and app data. Keep committed fixtures in this explicit folder.
+*.pdf
+!assets/fixtures/*.pdf
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*-wal
+*-shm
+/hyggewick-library/
+documents.json
+*.books.json
+*.library.json
+*.bak
+*.backup
+*.dump
+
+# Local diagnostics and temporary files
+*.log
+*.log.*
+*.tmp
+*.temp
+*.swp
+*.swo
+/logs/
+/tmp/
+/temp/
+/.local-data/
+/.private-data/
+
+# Android signing keys
+*.keystore
