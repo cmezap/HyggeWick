@@ -3,9 +3,13 @@ import * as LegacyFileSystem from 'expo-file-system/legacy';
 import {
   deleteBook,
   getAllBooks,
+  getBookByContentHash,
+  getBookById,
+  isFilePathReferenced,
   insertBook,
   migrateLegacyCatalog,
   updateBookMetadata,
+  updateBookContentHash,
   type Book,
 } from './book-repository';
 
@@ -15,6 +19,7 @@ export type ImportedDocument = {
   internalFileName: string;
   sizeBytes: number;
   importedAt: string;
+  duplicate?: boolean;
 };
 
 /** Returns SQLite metadata, including entries whose managed PDF has gone missing. */
@@ -50,6 +55,7 @@ export class DocumentStorageError extends Error {
 }
 
 const libraryDirectory = new Directory(Paths.document, 'hyggewick-library');
+const coversDirectory = new Directory(libraryDirectory, 'covers');
 const registryFileName = 'documents.json';
 const managedNamePattern = /^([\da-f-]{36})--(.+)$/i;
 
@@ -62,6 +68,28 @@ function createId() {
     const random = Math.floor(Math.random() * 16);
     return (character === 'x' ? random : (random & 0x3) | 0x8).toString(16);
   });
+}
+
+/** Copies a selected image into app-private cover storage, separate from managed PDFs. */
+export async function storeBookCover(sourceUri: string, fileName: string): Promise<string> {
+  try {
+    if (!libraryDirectory.exists) libraryDirectory.create({ intermediates: true });
+    if (!coversDirectory.exists) coversDirectory.create({ intermediates: true });
+    const extension = /\.(jpe?g|png|webp|gif|heic)$/i.exec(fileName)?.[0]?.toLowerCase() ?? '.img';
+    const destination = new File(coversDirectory, `${createId()}${extension}`);
+    await LegacyFileSystem.copyAsync({ from: sourceUri, to: destination.uri });
+    if (!destination.exists || destination.size <= 0) {
+      if (destination.exists) destination.delete();
+      throw new Error('Empty cover image');
+    }
+    return destination.uri;
+  } catch {
+    throw new DocumentStorageError('storage_failure', 'No se pudo guardar la imagen de portada. Inténtalo de nuevo.');
+  }
+}
+
+async function hashFile(file: File) {
+  return file.digest('SHA-256');
 }
 
 function isImportedDocument(value: unknown): value is ImportedDocument {
@@ -193,12 +221,20 @@ export async function importPdf(sourceUri: string, originalName: string, reporte
       throw new DocumentStorageError('insufficient_space', 'No hay espacio suficiente para importar este PDF.');
     }
 
-    const documents = await listImportedDocuments();
+    await listImportedDocuments();
+    const existingBooks = await getAllBooks();
+    for (const book of existingBooks) {
+      if (book.contentHash || book.status === 'missing') continue;
+      const existingFile = new File(book.filePath);
+      if (existingFile.exists) {
+        try { await updateBookContentHash(book.id, await hashFile(existingFile)); } catch { /* Keep legacy books importable if hashing fails. */ }
+      }
+    }
     let id = createId();
     let internalFileName = `${id}--${encodeURIComponent(name)}`;
     let temporary = new File(libraryDirectory, `import-${id}.tmp`);
     while (
-      documents.some((document) => document.id === id) ||
+      existingBooks.some((book) => book.id === id) ||
       new File(libraryDirectory, internalFileName).exists ||
       temporary.exists
     ) {
@@ -232,6 +268,13 @@ export async function importPdf(sourceUri: string, originalName: string, reporte
         throw new DocumentStorageError('invalid_pdf', 'El archivo seleccionado no parece ser un PDF válido.');
       }
 
+      const contentHash = await hashFile(temporary);
+      const duplicate = await getBookByContentHash(contentHash);
+      if (duplicate) {
+        temporary.delete();
+        return { ...importedDocument(duplicate), duplicate: true };
+      }
+
       await temporary.move(destination);
       if (__DEV__) console.info('[PDF import] final move', { exists: destination.exists, size: destination.size });
 
@@ -248,6 +291,7 @@ export async function importPdf(sourceUri: string, originalName: string, reporte
         originalFileName: name,
         filePath: destination.uri,
         fileSize: destination.size,
+        contentHash,
         dateAdded: document.importedAt,
       });
       return document;
@@ -272,11 +316,16 @@ function describeImportException(error: unknown) {
 }
 
 export async function removeImportedDocument(document: ImportedDocument) {
-  const file = new File(libraryDirectory, document.internalFileName);
+  const book = await getBookById(document.id);
+  if (!book) return;
+  const file = new File(book.filePath);
   try {
-    if (file.exists) file.delete();
-    // If SQLite deletion fails after the managed file is removed, the existing
-    // reconciliation path will keep the record visible as missing for recovery.
+    // Check while this record still exists. A shared path must remain on disk.
+    const shared = await isFilePathReferenced(book.filePath, book.id);
+    if (!shared && file.exists) {
+      file.delete();
+      if (file.exists) throw new Error('The managed PDF still exists after deletion.');
+    }
     await deleteBook(document.id);
   } catch {
     throw new DocumentStorageError('storage_failure', 'No se pudo eliminar el PDF de HyggeWick.');

@@ -1,67 +1,59 @@
 # HyggeWick
 
-HyggeWick es una aplicación personal de lectura digital, pensada primero para Android y diseñada para teléfonos y tablets. La dirección del producto es ofrecer una experiencia de lectura tranquila, con biblioteca y progreso disponibles localmente. La lectura EPUB, la gestión de libros y la persistencia offline todavía no están implementadas.
+HyggeWick es una aplicación personal de lectura digital, pensada primero para Android y adaptada a teléfonos y tablets. Reúne una biblioteca privada de PDF, un lector con progreso local y herramientas para guardar partes importantes de cada lectura. La experiencia busca sentirse tranquila y cercana, con una compañera visual en forma de vela.
+
+## Estado del proyecto
+
+La aplicación ya cuenta con los flujos principales de biblioteca, lectura y seguimiento. Los datos se guardan localmente en SQLite y los documentos se copian al almacenamiento privado de la app. La implementación del lector y de la selección de texto nativa está preparada en el workspace, pero varias funciones de Android todavía requieren una build instalada y validación física. El estado detallado y el historial de trabajo están en [`docs/BUILD_5.0_PROGRESS.md`](docs/BUILD_5.0_PROGRESS.md); la evolución previa del lector se conserva en [`docs/BUILD_4.0_PROGRESS.md`](docs/BUILD_4.0_PROGRESS.md).
+
+### Funciones implementadas
+
+- Inicio con acceso a lecturas recientes y biblioteca.
+- Importación de PDF, búsqueda, filtros, orden, favoritos y eliminación con opción breve para deshacer.
+- Ficha del libro con edición de metadatos y portada.
+- Lector PDF nativo Android con progreso y restauración de página, controles de navegación, marcadores y copia de texto.
+- Selección de texto PDFium y highlights persistentes con cuatro colores; acceso a frases y notas de lectura desde la selección.
+- Frases favoritas, notas y marcadores asociados al libro.
+- Actividad de lectura, estadísticas, perfil editable, avatar, racha y calendario semanal.
+- Persistencia offline-first mediante SQLite y almacenamiento privado local.
+- Navegación adaptable, tema claro/oscuro y componentes de interfaz reutilizables.
+
+### Límites actuales
+
+- El contenido compatible es PDF; EPUB no está implementado.
+- El lector PDF y la selección nativa requieren Android y un Development Build; la ruta web informa que el lector está disponible en Android.
+- La selección comienza con pulsación larga y se amplía tocando otra palabra de la misma página. No hay controles de arrastre; los PDFs escaneados sin capa de texto no tienen OCR.
+- No se ha documentado una validación física completa de gestos, zoom, rotación, alineación de highlights ni ciclo de vida del lector. Consulta la lista QA al final de Build 5.0.
+- La app no sincroniza datos entre dispositivos ni guarda duración de sesiones.
 
 ## Tecnologías
 
-- Expo SDK 58 y Expo Router
-- React 19 y React Native 0.88
-- TypeScript 6 en modo estricto
+- Expo SDK 58, Expo Router y React Native 0.88
+- React 19 y TypeScript 6 estricto
+- SQLite (`expo-sqlite`) para catálogo y datos de lectura
+- `@kishannareshpal/expo-pdf` con extensión local del bridge y código Kotlin/PDFium para Android
 - npm
-- Navegación adaptativa implementada con `expo-router/ui`
 
-## Estado del desarrollo
+## Requisitos y ejecución
 
-La base visual y de navegación está en construcción. El código actual incluye una pantalla de inicio inicial, tres destinos de navegación y componentes visuales reutilizables. La biblioteca y la actividad son placeholders; todavía no hay un flujo de importación de libros, un lector EPUB ni almacenamiento de datos de usuario.
-
-### Implementado actualmente
-
-- Pantalla Inicio en español con estado vacío y enlace a Biblioteca.
-- Navegación con Inicio, Biblioteca y Actividad: barra inferior en pantallas estrechas y panel lateral en pantallas anchas.
-- Sistema de tema claro/oscuro con colores semánticos y tokens de espaciado, tipografía, superficies, bordes y layout.
-- Componentes UI reutilizables: `Button`, `Surface`, `Badge`, `Divider`, `IconButton` y `ProgressBar`.
-- Componentes base `ThemedText`, `ThemedView` y un componente común para pantallas placeholder.
-- Configuración de Expo Router con rutas tipadas y alias TypeScript `@/`.
-
-### Pendiente
-
-- Biblioteca real: importar, listar, ordenar y quitar libros.
-- Lectura de EPUB, navegación por tabla de contenidos, ajustes de lectura y persistencia de la posición.
-- Metadatos, portadas, progreso, marcadores e historial de sesiones.
-- Persistencia offline-first y recuperación de datos después de cerrar la app.
-- Pruebas de integración y validación en dispositivos Android de teléfono y tablet.
-- Retirar o sustituir restos visuales y de contenido del starter de Expo.
-
-## Requisitos
-
-- Node.js compatible con Expo SDK 58 y npm.
-- Android con Expo Go compatible con SDK 58 o una compilación de desarrollo.
-- Para probar en un teléfono físico, instala Expo Go desde Google Play. Expo Go debe ser compatible con la versión SDK del proyecto.
-
-## Instalar y ejecutar
-
-Instala las dependencias:
+Se necesita Node.js compatible con Expo SDK 58 y npm. Instala dependencias:
 
 ```bash
 npm install
 ```
 
-Inicia el servidor de desarrollo:
+El `postinstall` ejecuta `scripts/patch-expo-pdf.js`, que extiende el paquete PDF instalado y copia los fuentes nativos locales. Para desarrollo de interfaz:
 
 ```bash
 npx expo start
 ```
 
-Abre Expo Go en Android y escanea el código QR. En una red local, el teléfono y el equipo deben poder comunicarse entre sí. Si el router, firewall o la red impiden esa conexión, inicia Expo con túnel:
+Para abrir el lector PDF en Android hace falta compilar e instalar un Development Build con los módulos nativos del proyecto; Expo Go por sí solo no incluye esa extensión. El perfil EAS `development` está configurado para APK interno. Consulta el estado de builds enlazado en la documentación antes de iniciar otra compilación.
 
-```bash
-npx expo start --tunnel
-```
+La interfaz web puede iniciarse con `npm run web`, pero no incluye el lector PDF. `npm run lint` ejecuta Expo lint.
 
-También puedes usar el script npm para abrir la interfaz web:
+## Documentación
 
-```bash
-npm run web
-```
-
-El soporte web es secundario frente al objetivo Android. El comando `npm run lint` está configurado para ejecutar Expo lint.
+- [`docs/BUILD_5.0_PROGRESS.md`](docs/BUILD_5.0_PROGRESS.md): arquitectura de selección PDF, highlights, perfil, QA y pendientes de dispositivo.
+- [`docs/BUILD_4.0_PROGRESS.md`](docs/BUILD_4.0_PROGRESS.md): cambios anteriores de navegación y persistencia del lector; su bloqueo de selección quedó resuelto en Build 5.0.
+- [`src/features/library/PERSISTENCE.md`](src/features/library/PERSISTENCE.md): esquema, migraciones, archivos locales y reglas de persistencia.

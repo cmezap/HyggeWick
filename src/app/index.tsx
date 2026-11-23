@@ -1,4 +1,4 @@
-import { Link, useFocusEffect } from 'expo-router';
+import { Link, useFocusEffect, usePathname } from 'expo-router';
 import { Image } from 'expo-image';
 import { SymbolView } from 'expo-symbols';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -6,41 +6,21 @@ import { useCallback, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
+import { BookCover } from '@/components/book-cover';
 import { ThemedView } from '@/components/themed-view';
 import { Button, Surface } from '@/components/ui';
 import { useTheme } from '@/hooks/use-theme';
 import { getLibraryBooks } from '@/features/library/document-storage';
 import type { Book } from '@/features/library/book-repository';
+import { openBook as openLibraryBook } from '@/features/library/open-book';
 import { Borders, Layout, Radii, Spacing, Typography } from '@/theme';
 
 const heroArtwork = require('../../assets/images/hyggewick-home-hero.webp');
 const COVER_RATIO = 2 / 3;
 
-/** Portada de libro: imagen real o placeholder con motivo */
-function BookCover({ book, index, style }: { book: Book; index: number; style?: object }) {
-  const theme = useTheme();
-  const motifs = ['✦', '☾', '❧'];
-  const tints = [theme.accent, theme.accentLavender, theme.success];
-  return (
-    <View style={[styles.bookCover, { backgroundColor: theme.surfaceSelected, borderColor: theme.border }, style]}>
-      {book.coverPath ? (
-        <Image source={{ uri: book.coverPath }} style={StyleSheet.absoluteFill} contentFit="cover" />
-      ) : (
-        <>
-          <ThemedText style={[styles.coverMotif, { color: tints[index % tints.length] }]}>
-            {motifs[index % motifs.length]}
-          </ThemedText>
-          <ThemedText numberOfLines={3} style={styles.coverTitle}>
-            {book.title.replace(/\.pdf$/i, '')}
-          </ThemedText>
-        </>
-      )}
-    </View>
-  );
-}
-
 export default function HomeScreen() {
   const theme = useTheme();
+  const pathname = usePathname();
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
   const isWide = width >= Layout.tabletBreakpoint || (isLandscape && width >= 600);
@@ -49,6 +29,7 @@ export default function HomeScreen() {
   const [books, setBooks] = useState<Book[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  const [openNotice, setOpenNotice] = useState<string | null>(null);
 
   const loadBooks = useCallback(async () => {
     setLoading(true);
@@ -65,11 +46,18 @@ export default function HomeScreen() {
   useFocusEffect(useCallback(() => { void loadBooks(); }, [loadBooks]));
 
   const currentBook = books
-    .filter((b) => b.readingProgress > 0 && b.status === 'available')
+    .filter((b) => b.readingState === 'reading' && b.status === 'available')
     .sort((a, b) => (b.lastOpenedAt ?? b.updatedAt).localeCompare(a.lastOpenedAt ?? a.updatedAt))[0];
 
-  // En móvil mostramos los primeros 4 libros en el estante; en tablet/landscape hasta 6
-  const shelfBooks = books.slice(0, isWide ? 6 : 4);
+  // Prioriza lecturas retomadas y aperturas recientes sin convertir Home en otra biblioteca.
+  const shelfBooks = books.filter((book) => book.status === 'available')
+    .sort((a, b) => (b.lastOpenedAt ?? b.dateAdded).localeCompare(a.lastOpenedAt ?? a.dateAdded))
+    .slice(0, isWide ? 6 : 4);
+
+  const handleOpenBook = (book: Book) => {
+    const issue = openLibraryBook(book, pathname);
+    setOpenNotice(issue === 'missing' ? `No se encontró el PDF de “${book.title}”.` : issue === 'inaccessible' ? `No se pudo acceder al archivo de “${book.title}”.` : null);
+  };
 
   return (
     <ThemedView style={styles.screen}>
@@ -206,9 +194,8 @@ export default function HomeScreen() {
                 <ThemedText themeColor="textMuted">Revisando tus estantes…</ThemedText>
               </Surface>
             ) : currentBook ? (
-              <Link href="/library" asChild>
-                <Pressable style={StyleSheet.flatten([styles.readingCard, { backgroundColor: theme.surface, borderColor: theme.border }])}>
-                  <BookCover book={currentBook} index={0} style={styles.readingCover} />
+              <Pressable accessibilityRole="button" accessibilityLabel={`Continuar leyendo ${currentBook.title}`} onPress={() => handleOpenBook(currentBook)} style={StyleSheet.flatten([styles.readingCard, { backgroundColor: theme.surface, borderColor: theme.border }])}>
+                  <BookCover book={currentBook} style={styles.readingCover} />
                   <View style={styles.readingInfo}>
                     <ThemedText style={styles.readingTitle} numberOfLines={1}>
                       {currentBook.title.replace(/\.pdf$/i, '')}
@@ -223,8 +210,7 @@ export default function HomeScreen() {
                   <View style={[styles.readingArrow, { backgroundColor: theme.accentLavender }]}>
                     <SymbolView name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }} size={16} tintColor={theme.background} />
                   </View>
-                </Pressable>
-              </Link>
+              </Pressable>
             ) : (
               <Surface variant="subtle" style={styles.emptyCard}>
                 <View style={[styles.emptyIcon, { borderColor: theme.borderEmphasized }]}>
@@ -249,10 +235,12 @@ export default function HomeScreen() {
             ) : null}
           </View>
 
+          {openNotice ? <Pressable accessibilityRole="button" onPress={() => setOpenNotice(null)}><ThemedText type="small" themeColor="error">{openNotice} · Cerrar</ThemedText></Pressable> : null}
+
           {/* ── TU BIBLIOTECA ── */}
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
-              <ThemedText style={styles.sectionTitle}>Tu biblioteca</ThemedText>
+              <ThemedText style={styles.sectionTitle}>Libros recientes</ThemedText>
               <ThemedText style={[styles.sectionDot, { color: theme.accent }]}> ✦</ThemedText>
               <View style={[styles.sectionLine, { backgroundColor: theme.border }]} />
               <Link href="/library" asChild>
@@ -266,9 +254,11 @@ export default function HomeScreen() {
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={[styles.shelfContent, isWide && styles.shelfContentWide]}>
               {shelfBooks.map((book, i) => (
-                <View key={book.id} style={[styles.shelfItem, isWide && styles.shelfItemWide]}>
-                  <BookCover book={book} index={i} style={styles.shelfCover} />
-                </View>
+                <Pressable key={book.id} accessibilityRole="button" accessibilityLabel={`Abrir ${book.title}`} onPress={() => handleOpenBook(book)} style={[styles.shelfItem, isWide && styles.shelfItemWide]}>
+                  <BookCover book={book} style={styles.shelfCover} />
+                  <ThemedText numberOfLines={2} style={styles.shelfBookTitle}>{book.title.replace(/\.pdf$/i, '')}</ThemedText>
+                  {book.readingProgress > 0 ? <ThemedText type="small" themeColor="textMuted">{Math.round(book.readingProgress * 100)}% leído</ThemedText> : null}
+                </Pressable>
               ))}
 
               {/* Celda "Agregar más libros" con dimensiones proporcionales fijas */}
@@ -288,11 +278,10 @@ export default function HomeScreen() {
               </Link>
             </ScrollView>
 
-            {books.length === 0 && !loading && (
-              <ThemedText type="small" themeColor="textMuted" style={styles.shelfEmpty}>
-                Tus próximas historias tendrán aquí su lugar.
-              </ThemedText>
-            )}
+            {books.length === 0 && !loading ? <Surface variant="subtle" style={styles.shelfEmptyCard}>
+              <ThemedText type="small" themeColor="textSecondary">Tus historias aparecerán aquí cuando importes tu primer libro.</ThemedText>
+              <Link href="/library" asChild><Button title="Importar desde Biblioteca" size="small" variant="secondary" /></Link>
+            </Surface> : null}
             {loadError ? <ThemedText type="small" themeColor="textMuted">No se pudo actualizar la colección.</ThemedText> : null}
           </View>
 
@@ -479,24 +468,7 @@ const styles = StyleSheet.create({
   },
   addIcon: { fontSize: 22, lineHeight: 26 },
   addLabel: { fontSize: 11, lineHeight: 14, textAlign: 'center' },
-  shelfEmpty: { marginTop: Spacing.one },
+  shelfEmptyCard: { marginTop: Spacing.one, padding: Spacing.three, gap: Spacing.two, alignItems: 'flex-start' },
+  shelfBookTitle: { marginTop: Spacing.one, fontSize: 13, lineHeight: 17, fontFamily: Typography.literary.fontFamily },
 
-  /* Portada genérica */
-  bookCover: {
-    borderWidth: Borders.subtle,
-    borderRadius: Radii.medium,
-    overflow: 'hidden',
-    padding: 6,
-    alignItems: 'center',
-    justifyContent: 'center',
-    aspectRatio: COVER_RATIO,
-  },
-  coverMotif: { fontSize: 18, marginBottom: 2, textAlign: 'center' },
-  coverTitle: {
-    fontSize: 9,
-    lineHeight: 12,
-    fontFamily: Typography.literary.fontFamily,
-    textAlign: 'center',
-    color: '#C4BDCF',
-  },
 });

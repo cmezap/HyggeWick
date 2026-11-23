@@ -16,19 +16,21 @@ import { ThemedText } from '@/components/themed-text';
 import { Borders, Layout, Radii, Spacing } from '@/theme';
 import { useTheme } from '@/hooks/use-theme';
 
-type Destination = 'home' | 'library' | 'activity';
+type Destination = 'home' | 'library' | 'activity' | 'profile';
 
 const destinationIcons = {
   home: { ios: 'house.fill', android: 'home', web: 'home' },
   library: { ios: 'books.vertical.fill', android: 'library_books', web: 'menu_book' },
-  activity: { ios: 'clock.fill', android: 'history', web: 'history' },
+  activity: { ios: 'chart.bar.fill', android: 'auto_graph', web: 'insights' },
+  profile: { ios: 'person.crop.circle.fill', android: 'account_circle', web: 'account_circle' },
 } as const;
 
 export function ResponsiveAppTabs() {
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
   const isWide = width >= Layout.tabletLandscapeBreakpoint || (isLandscape && width >= 600);
-  const isPdfPoc = usePathname() === '/pdf-poc';
+  const pathname = usePathname();
+  const isImmersiveScreen = pathname === '/pdf-poc' || pathname === '/reader' || pathname.startsWith('/metadata/') || pathname.startsWith('/book/');
   const theme = useTheme();
 
   return (
@@ -42,7 +44,7 @@ export function ResponsiveAppTabs() {
         ]}>
         <TabSlot style={styles.content} />
         <TabList asChild>
-          <ResponsiveTabList wide={isWide} hidden={isPdfPoc}>
+          <ResponsiveTabList wide={isWide} hidden={isImmersiveScreen}>
             <TabTrigger name="home" href="/" asChild>
               <TabButton destination="home" label="Inicio" wide={isWide} />
             </TabTrigger>
@@ -50,9 +52,15 @@ export function ResponsiveAppTabs() {
               <TabButton destination="library" label="Biblioteca" wide={isWide} />
             </TabTrigger>
             <TabTrigger name="activity" href="/activity" asChild>
-              <TabButton destination="activity" label="Actividad" wide={isWide} />
+              <TabButton destination="activity" label="Progreso" wide={isWide} />
+            </TabTrigger>
+            <TabTrigger name="profile" href={'/profile' as Href} asChild>
+              <TabButton destination="profile" label="Perfil" wide={isWide} />
             </TabTrigger>
             <TabTrigger name="pdf-poc" href={'/pdf-poc' as Href} style={styles.hiddenTrigger} />
+            <TabTrigger name="reader" href={'/reader' as Href} style={styles.hiddenTrigger} />
+            <TabTrigger name="metadata" href={'/metadata/[id]' as Href} style={styles.hiddenTrigger} />
+            <TabTrigger name="book-detail" href={'/book/[id]' as Href} style={styles.hiddenTrigger} />
           </ResponsiveTabList>
         </TabList>
       </SafeAreaView>

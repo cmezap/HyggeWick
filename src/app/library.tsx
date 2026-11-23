@@ -1,14 +1,14 @@
 import * as DocumentPicker from 'expo-document-picker';
-import { Image } from 'expo-image';
 import { SymbolView } from 'expo-symbols';
-import { useFocusEffect } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useFocusEffect, useRouter, type Href } from 'expo-router';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, TextInput, View,
   useWindowDimensions,
 } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
+import { BookCover } from '@/components/book-cover';
 import { ThemedView } from '@/components/themed-view';
 import { Button, IconButton, Surface } from '@/components/ui';
 import { useTheme } from '@/hooks/use-theme';
@@ -33,35 +33,12 @@ function friendlyError(error: unknown) {
   return 'No se pudo completar la acción. Inténtalo de nuevo.';
 }
 
-function BookCover({ book, index }: { book: Book; index: number }) {
-  const theme = useTheme();
-  const motifs = [
-    { glyph: '✦', tint: theme.accent }, { glyph: '☾', tint: theme.accentLavender },
-    { glyph: '❧', tint: theme.success }, { glyph: '✧', tint: theme.warning },
-  ];
-  const motif = motifs[index % motifs.length]!;
-  return (
-    <View style={[styles.cover, { backgroundColor: theme.surfaceSelected, borderColor: theme.border }]}>
-      {book.coverPath ? <Image source={{ uri: book.coverPath }} style={StyleSheet.absoluteFill} contentFit="cover" /> : (
-        <>
-          <View style={[styles.coverRule, { backgroundColor: motif.tint }]} />
-          <ThemedText style={[styles.coverGlyph, { color: motif.tint }]}>{motif.glyph}</ThemedText>
-          <ThemedText numberOfLines={3} ellipsizeMode="tail" style={styles.coverTitle}>{book.title.replace(/\.pdf$/i, '')}</ThemedText>
-          <ThemedText type="small" themeColor="textMuted" style={styles.coverFormat}>PDF · HYGGEWICK</ThemedText>
-        </>
-      )}
-      {book.isFavorite ? <View style={[styles.coverFavorite, { backgroundColor: theme.background }]}>
-        <SymbolView name={{ ios: 'heart.fill', android: 'favorite', web: 'favorite' }} size={14} tintColor={theme.accent} />
-      </View> : null}
-    </View>
-  );
-}
-
 export default function LibraryScreen() {
   const theme = useTheme();
+  const router = useRouter();
   const { width } = useWindowDimensions();
   const compactHeader = width < 520;
-  const columns = width >= Layout.tabletLandscapeBreakpoint ? 5 : width >= Layout.tabletBreakpoint ? 4 : width >= 520 ? 3 : 2;
+  const columns = width >= 1150 ? 6 : width >= 850 ? 5 : width >= 600 ? 4 : 3;
   const [books, setBooks] = useState<Book[]>([]);
   const [loading, setLoading] = useState(true);
   const [importing, setImporting] = useState(false);
@@ -70,6 +47,8 @@ export default function LibraryScreen() {
   const [sort, setSort] = useState<SortMode>('recent');
   const [filter, setFilter] = useState<FilterMode>('all');
   const [notice, setNotice] = useState<string | null>(null);
+  const [pendingRemoval, setPendingRemoval] = useState<{ book: Book; expiresAt: number } | null>(null);
+  const [undoSeconds, setUndoSeconds] = useState(5);
 
   const loadBooks = useCallback(async () => {
     setLoading(true);
@@ -79,6 +58,29 @@ export default function LibraryScreen() {
   }, []);
 
   useFocusEffect(useCallback(() => { void loadBooks(); }, [loadBooks]));
+
+  const finishRemoval = useCallback(async (book: Book) => {
+    const document: ImportedDocument = { id: book.id, originalName: book.originalFileName,
+      internalFileName: book.filePath.split('/').pop() ?? '', sizeBytes: book.fileSize, importedAt: book.dateAdded };
+    try { await removeImportedDocument(document); setErrorMessage(null); }
+    catch (error) {
+      setBooks((current) => current.some((entry) => entry.id === book.id) ? current : [...current, book]);
+      setErrorMessage(friendlyError(error));
+    }
+  }, [loadBooks]);
+
+  useEffect(() => {
+    if (!pendingRemoval) return;
+    const { book, expiresAt } = pendingRemoval;
+    const updateCountdown = () => setUndoSeconds(Math.max(0, (expiresAt - Date.now()) / 1000));
+    updateCountdown();
+    const interval = setInterval(updateCountdown, 100);
+    const timeout = setTimeout(() => {
+      setPendingRemoval((current) => current?.book.id === book.id ? null : current);
+      void finishRemoval(book);
+    }, Math.max(0, expiresAt - Date.now()));
+    return () => { clearInterval(interval); clearTimeout(timeout); };
+  }, [pendingRemoval, finishRemoval]);
 
   const visibleBooks = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
@@ -105,7 +107,8 @@ export default function LibraryScreen() {
       if (picked.mimeType && !['application/pdf', 'application/octet-stream'].includes(picked.mimeType)) {
         setErrorMessage('Selecciona un archivo con formato PDF.'); return;
       }
-      await importPdf(picked.uri, picked.name, picked.size);
+      const imported = await importPdf(picked.uri, picked.name, picked.size);
+      setNotice(imported.duplicate ? `“${picked.name}” ya está en tu biblioteca; no se creó otra copia.` : null);
       await loadBooks();
     } catch (error) { setErrorMessage(friendlyError(error)); }
     finally { setImporting(false); }
@@ -118,41 +121,55 @@ export default function LibraryScreen() {
     catch { setBooks((current) => current.map((entry) => entry.id === book.id ? { ...entry, isFavorite: book.isFavorite } : entry)); setErrorMessage('No se pudo guardar el favorito. Inténtalo de nuevo.'); }
   };
 
-  const confirmRemove = (book: Book) => Alert.alert(
-    'Eliminar de HyggeWick',
-    `Se eliminará “${book.title}” de la biblioteca y de este dispositivo.`,
-    [{ text: 'Cancelar', style: 'cancel' }, { text: 'Eliminar', style: 'destructive', onPress: () => {
-      const document: ImportedDocument = { id: book.id, originalName: book.originalFileName,
-        internalFileName: book.filePath.split('/').pop() ?? '', sizeBytes: book.fileSize, importedAt: book.dateAdded };
-      void removeImportedDocument(document).then(() => {
-        setBooks((current) => current.filter((entry) => entry.id !== book.id)); setErrorMessage(null);
-      }).catch((error: unknown) => setErrorMessage(friendlyError(error)));
-    } }],
-  );
+  const confirmRemove = (book: Book) => {
+    if (pendingRemoval) return;
+    setBooks((current) => current.filter((entry) => entry.id !== book.id));
+    setPendingRemoval({ book, expiresAt: Date.now() + 5000 });
+    setUndoSeconds(5);
+    setErrorMessage(null);
+  };
+
+  const undoRemoval = () => {
+    if (!pendingRemoval) return;
+    setBooks((current) => current.some((entry) => entry.id === pendingRemoval.book.id)
+      ? current : [...current, pendingRemoval.book]);
+    setPendingRemoval(null);
+  };
+
+  const openBook = (book: Book) => {
+    router.push({ pathname: '/book/[id]', params: { id: book.id } } as unknown as Href);
+  };
+
+  const openBookOptions = (book: Book) => {
+    Alert.alert(book.title, 'Opciones del libro', [
+      { text: 'Editar libro', onPress: () => router.push({ pathname: '/metadata/[id]', params: { id: book.id } } as unknown as Href) },
+      { text: 'Eliminar de HyggeWick', style: 'destructive', onPress: () => confirmRemove(book) },
+      { text: 'Cancelar', style: 'cancel' },
+    ]);
+  };
 
   const renderBook = ({ item, index }: { item: Book; index: number }) => (
     <View style={styles.bookCell}>
-      <Pressable accessibilityRole="button" accessibilityLabel={`Seleccionar ${item.title}`} onPress={() => {
-        if (item.status === 'missing') setNotice(`No se encontró el PDF de “${item.title}”. Puedes quitar el registro de la biblioteca.`);
-        else setNotice('El lector PDF estará disponible en una próxima etapa.');
-      }} style={({ pressed }) => [styles.bookPressable, pressed && styles.pressed]}>
-        <BookCover book={item} index={index} />
-        <ThemedText numberOfLines={2} ellipsizeMode="tail" style={styles.bookTitle}>{item.title}</ThemedText>
-        <ThemedText type="small" themeColor="textMuted" numberOfLines={1}>{item.author || 'Documento PDF'}</ThemedText>
-        <ThemedText type="small" themeColor={item.status === 'missing' ? 'error' : 'textMuted'}>
-          {item.status === 'missing' ? 'Archivo no encontrado' : `${formatFileSize(item.fileSize)} · ${item.readingProgress > 0 ? `${Math.round(item.readingProgress * 100)}% leído` : 'PDF'}`}
+      <Pressable accessibilityRole="button" accessibilityLabel={`Abrir ${item.title}`} onPress={() => openBook(item)} style={({ pressed }) => [styles.bookPressable, pressed && styles.pressed]}>
+        <BookCover book={item} favorite={item.isFavorite} />
+        <ThemedText numberOfLines={1} ellipsizeMode="tail" style={styles.bookTitle}>{item.title}</ThemedText>
+        <View style={styles.authorSlot}>
+          {item.author ? <ThemedText type="small" themeColor="textMuted" numberOfLines={1} ellipsizeMode="tail">{item.author}</ThemedText> : null}
+        </View>
+        <ThemedText type="small" numberOfLines={1} ellipsizeMode="tail" themeColor={item.status === 'missing' ? 'error' : 'textMuted'}>
+          {item.status === 'missing' ? 'Archivo no encontrado' : `${formatFileSize(item.fileSize)} · ${item.readingState === 'finished' ? 'Terminado' : item.readingState === 'reading' ? `${Math.round(item.readingProgress * 100)}% · Leyendo` : 'Pendiente'}`}
         </ThemedText>
-        {item.status === 'available' && item.readingProgress > 0 ? <View style={[styles.progressTrack, { backgroundColor: theme.progressTrack }]}>
-          <View style={[styles.progress, { width: `${Math.round(item.readingProgress * 100)}%`, backgroundColor: theme.progress }]} />
-        </View> : null}
+        <View style={[styles.progressTrack, { backgroundColor: theme.progressTrack }]}>
+          {item.status === 'available' && item.readingProgress > 0 ? <View style={[styles.progress, { width: `${Math.round(item.readingProgress * 100)}%`, backgroundColor: theme.progress }]} /> : null}
+        </View>
       </Pressable>
       <View style={styles.bookActions}>
-        <IconButton accessibilityLabel={item.isFavorite ? `Quitar ${item.title} de favoritos` : `Añadir ${item.title} a favoritos`}
+        <IconButton style={styles.compactIcon} accessibilityLabel={item.isFavorite ? `Quitar ${item.title} de favoritos` : `Añadir ${item.title} a favoritos`}
           variant="subtle" onPress={() => void toggleFavorite(item)} icon={<SymbolView
             name={{ ios: item.isFavorite ? 'heart.fill' : 'heart', android: item.isFavorite ? 'favorite' : 'favorite_border', web: item.isFavorite ? 'favorite' : 'favorite_border' }}
-            size={19} tintColor={item.isFavorite ? theme.accent : theme.textMuted} />} />
-        <IconButton accessibilityLabel={`Eliminar ${item.title} de HyggeWick`} variant="subtle" onPress={() => confirmRemove(item)} icon={<SymbolView
-          name={{ ios: 'trash', android: 'delete_outline', web: 'delete_outline' }} size={19} tintColor={theme.textSecondary} />} />
+            size={18} tintColor={item.isFavorite ? theme.accent : theme.textMuted} />} />
+        <IconButton style={styles.compactIcon} accessibilityLabel={`Opciones de ${item.title}`} variant="subtle" disabled={!!pendingRemoval} onPress={() => openBookOptions(item)} icon={<SymbolView
+          name={{ ios: 'ellipsis', android: 'more_vert', web: 'more_vert' }} size={19} tintColor={theme.textSecondary} />} />
       </View>
     </View>
   );
@@ -219,13 +236,38 @@ export default function LibraryScreen() {
         </View> : <View />)}
         contentContainerStyle={styles.listContent} columnWrapperStyle={columns > 1 ? styles.row : undefined}
         showsVerticalScrollIndicator={false} initialNumToRender={12} windowSize={7} />
+      {pendingRemoval ? <View style={styles.undoDock} pointerEvents="box-none">
+        <Surface variant="elevated" style={[styles.undoCard, { borderColor: theme.borderEmphasized }]}>
+          <View style={styles.undoCopy}>
+            <ThemedText style={styles.undoTitle}>Eliminación pendiente</ThemedText>
+            <ThemedText type="small" themeColor="textSecondary" numberOfLines={2}>
+              “{pendingRemoval.book.title}” se quitará de tu Biblioteca en {Math.ceil(undoSeconds)} s. El PDF seguirá en el dispositivo.
+            </ThemedText>
+            <View style={[styles.undoTrack, { backgroundColor: theme.border }]}>
+              <View style={[styles.undoProgress, { width: `${Math.max(0, Math.min(100, undoSeconds / 5 * 100))}%`, backgroundColor: theme.accent }]} />
+            </View>
+          </View>
+          <Pressable accessibilityRole="button" accessibilityLabel="Deshacer eliminación" onPress={undoRemoval}
+            style={({ pressed }) => [styles.undoButton, { backgroundColor: theme.surfaceSelected }, pressed && styles.pressed]}>
+            <SymbolView name={{ ios: 'arrow.uturn.backward', android: 'undo', web: 'undo' }} size={17} tintColor={theme.accent} />
+            <ThemedText themeColor="accent" style={styles.undoButtonText}>Deshacer</ThemedText>
+          </Pressable>
+        </Surface>
+      </View> : null}
     </ThemedView>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1 }, listContent: { flexGrow: 1, paddingHorizontal: Layout.phoneHorizontalMargin, paddingVertical: Spacing.five },
-  headerContent: { width: '100%', maxWidth: Layout.contentMaxWidth, alignSelf: 'center', gap: Spacing.four, marginBottom: Spacing.four },
+  screen: { flex: 1 }, listContent: { flexGrow: 1, paddingHorizontal: Layout.phoneHorizontalMargin, paddingVertical: Spacing.three },
+  undoDock: { position: 'absolute', left: Layout.phoneHorizontalMargin, right: Layout.phoneHorizontalMargin, bottom: Spacing.three, alignItems: 'center' },
+  undoCard: { width: '100%', maxWidth: Layout.contentMaxWidth, minHeight: 76, padding: Spacing.three, borderRadius: Radii.large, flexDirection: 'row', alignItems: 'center', gap: Spacing.three },
+  undoCopy: { flex: 1, minWidth: 0, gap: Spacing.one }, undoTitle: { fontWeight: '600' },
+  undoTrack: { width: '100%', height: 3, borderRadius: 2, overflow: 'hidden', marginTop: Spacing.one },
+  undoProgress: { height: '100%', borderRadius: 2 },
+  undoButton: { minHeight: 42, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.one, paddingHorizontal: Spacing.three, borderRadius: Radii.medium },
+  undoButtonText: { fontWeight: '600' },
+  headerContent: { width: '100%', maxWidth: Layout.contentMaxWidth, alignSelf: 'center', gap: Spacing.three, marginBottom: Spacing.three },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.three },
   compactHeader: { flexDirection: 'column', alignItems: 'stretch', gap: Spacing.two },
   compactImportButton: { alignSelf: 'flex-start' },
@@ -235,13 +277,9 @@ const styles = StyleSheet.create({
   controlRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.two },
   pills: { flexDirection: 'row', gap: Spacing.one }, pill: { minHeight: 40, paddingHorizontal: Spacing.three, borderRadius: Radii.pill, justifyContent: 'center' },
   sortWrap: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one }, sortControl: { minHeight: 40, flexDirection: 'row', alignItems: 'center', gap: Spacing.one, borderWidth: Borders.subtle, borderRadius: Radii.medium, paddingHorizontal: Spacing.two },
-  bookCell: { flex: 1, minWidth: 0, paddingHorizontal: Spacing.one, paddingBottom: Spacing.four, maxWidth: 220 }, bookPressable: { gap: Spacing.one }, pressed: { opacity: 0.78 },
-  cover: { width: '100%', minWidth: 0, aspectRatio: 2 / 3, borderRadius: Radii.medium, borderWidth: Borders.subtle, overflow: 'hidden', padding: Spacing.two, justifyContent: 'center', alignItems: 'center' },
-  coverRule: { position: 'absolute', top: 12, bottom: 12, left: 10, width: 2, opacity: 0.75 }, coverGlyph: { fontSize: 28, marginBottom: Spacing.one },
-  coverTitle: { width: '100%', flexShrink: 1, textAlign: 'center', fontFamily: 'serif', fontSize: 14, lineHeight: 18 }, coverFormat: { position: 'absolute', bottom: 10, letterSpacing: 0.7, fontSize: 8 },
-  coverFavorite: { position: 'absolute', top: 8, right: 8, width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  bookTitle: { fontWeight: '600', marginTop: Spacing.one, minHeight: 40 }, progressTrack: { height: 3, borderRadius: 2, overflow: 'hidden', marginTop: Spacing.one }, progress: { height: '100%' },
-  bookActions: { flexDirection: 'row', justifyContent: 'flex-start', gap: Spacing.one, marginTop: Spacing.one },
+  bookCell: { flex: 1, minWidth: 0, paddingHorizontal: 3, paddingBottom: Spacing.two, maxWidth: 190 }, bookPressable: { gap: 2 }, pressed: { opacity: 0.78 },
+  bookTitle: { fontSize: 13, lineHeight: 17, fontWeight: '600', marginTop: 2, height: 17, minWidth: 0 }, authorSlot: { height: 15, justifyContent: 'center' }, progressTrack: { height: 3, borderRadius: 2, overflow: 'hidden', marginTop: 2 }, progress: { height: '100%' },
+  bookActions: { flexDirection: 'row', justifyContent: 'flex-start', gap: 2 }, compactIcon: { width: 38, height: 38 },
   emptyState: { minHeight: 290, maxWidth: 620, width: '100%', alignSelf: 'center', justifyContent: 'center', alignItems: 'center', padding: Spacing.five, gap: Spacing.three },
   emptyIcon: { width: 64, height: 64, borderWidth: Borders.subtle, borderRadius: Radii.pill, alignItems: 'center', justifyContent: 'center' }, emptyTitle: { textAlign: 'center' }, emptyCopy: { textAlign: 'center', maxWidth: 420 },
   loading: { minHeight: 180, alignItems: 'center', justifyContent: 'center', gap: Spacing.three }, noResults: { minHeight: 200, alignItems: 'center', justifyContent: 'center', gap: Spacing.two }, row: { justifyContent: 'flex-start' },
