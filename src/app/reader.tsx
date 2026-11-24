@@ -1,18 +1,19 @@
-import { PdfView, type HighlightTappedEventPayload, type OnErrorEventPayload, type OnPageChangedEventPayload, type SelectionUnavailableEventPayload, type TextSelectionCancelledEventPayload, type TextSelectionEventPayload } from '@kishannareshpal/expo-pdf';
+import { type HighlightTappedEventPayload, type OnErrorEventPayload, type OnPageChangedEventPayload, type SelectionUnavailableEventPayload, type TextSelectionCancelledEventPayload, type TextSelectionEventPayload } from '@kishannareshpal/expo-pdf';
 import { File } from 'expo-file-system';
 import { router, useLocalSearchParams, type Href } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, TextInput, View, useWindowDimensions } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from 'react-native';
 import { SymbolView } from 'expo-symbols';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { ReadingNoteEditor } from '@/components/reading-note-editor';
+import { ReaderPdfView } from '@/components/reader-pdf-view';
 import { Button, IconButton } from '@/components/ui';
 import { useTheme } from '@/hooks/use-theme';
 import { getBookById, updateLastOpenedAt, updateReadingProgress, type Book } from '@/features/library/book-repository';
-import { addFavoriteQuote } from '@/features/library/quote-repository';
-import { getReadingBookmarkAtPage, saveReadingBookmark, type ReadingBookmark } from '@/features/library/bookmark-repository';
+import { addFavoriteQuote, getFavoriteQuotes, type FavoriteQuote } from '@/features/library/quote-repository';
+import { getReadingBookmarkAtPage, getReadingBookmarks, saveReadingBookmark, type ReadingBookmark } from '@/features/library/bookmark-repository';
 import { createReadingNote } from '@/features/library/reading-note-repository';
 import { deleteReadingHighlight, getReadingHighlights, HIGHLIGHT_COLORS, saveReadingHighlight, updateReadingHighlightColor, type ReadingHighlight } from '@/features/library/highlight-repository';
 import { recordReadingActivity } from '@/features/profile/profile-repository';
@@ -31,12 +32,28 @@ export default function ReaderScreen() {
   const requestedStartPage = Array.isArray(pageParam) ? pageParam[0] : pageParam;
   const parsedStartPage = Number(requestedStartPage);
   const startPage = Number.isInteger(parsedStartPage) && parsedStartPage > 0 ? parsedStartPage : null;
+  const readerOpenedAt = useRef<number | null>(null);
+  const timingCounts = useRef<Record<string, number>>({});
+  const logTiming = useCallback((event: string, details: Record<string, unknown> = {}) => {
+    const count = (timingCounts.current[event] ?? 0) + 1;
+    timingCounts.current[event] = count;
+    const at = Date.now();
+    console.info(`[Reader timing] ${event} #${count}`, {
+      at,
+      elapsedMs: at - (readerOpenedAt.current ?? at),
+      bookId: id,
+      ...details,
+    });
+  }, [id]);
   const [book, setBook] = useState<Book | null>(null);
   const [loadState, setLoadState] = useState<LoadState>('loading');
   const [page, setPage] = useState<number | null>(null);
   const [pageCount, setPageCount] = useState<number | null>(null);
-  const [controlsVisible, setControlsVisible] = useState(true);
+  const [controlsVisible, setControlsVisible] = useState(false);
   const [actionsMenuVisible, setActionsMenuVisible] = useState(false);
+  const [annotationsMenuVisible, setAnnotationsMenuVisible] = useState(false);
+  const [annotationListsLoading, setAnnotationListsLoading] = useState(false);
+  const [highlightsLoading, setHighlightsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [pageInput, setPageInput] = useState('');
   const [requestedPage, setRequestedPage] = useState<number | undefined>(undefined);
@@ -51,6 +68,8 @@ export default function ReaderScreen() {
   const [noteEditorVisible, setNoteEditorVisible] = useState(false);
   const [noteInitialContent, setNoteInitialContent] = useState<string | undefined>(undefined);
   const [highlights, setHighlights] = useState<ReadingHighlight[]>([]);
+  const [bookmarks, setBookmarks] = useState<ReadingBookmark[]>([]);
+  const [quotes, setQuotes] = useState<FavoriteQuote[]>([]);
   const [selection, setSelection] = useState<TextSelectionEventPayload | null>(null);
   const [selectionMenuVisible, setSelectionMenuVisible] = useState(false);
   const [highlightPaletteVisible, setHighlightPaletteVisible] = useState(false);
@@ -62,10 +81,19 @@ export default function ReaderScreen() {
   const pendingProgress = useRef<{ id: string; page: number; total: number } | null>(null);
   const viewerLoaded = useRef(false);
   const initialPageChangePending = useRef(false);
+  const initialTargetPage = useRef<number | null>(null);
+  const pdfLoadHandled = useRef(false);
+  const annotationListsBookId = useRef<string | null>(null);
+  const pendingProgrammaticPage = useRef<number | null>(null);
   const mounted = useRef(true);
   const activityWriteFailed = useRef(false);
   const lastObservedPage = useRef<number | null>(null);
   const manualAdvanceTarget = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (readerOpenedAt.current == null) readerOpenedAt.current = Date.now();
+    logTiming('Reader mounted', { pageParam: startPage });
+  }, [logTiming, startPage]);
 
   const flushPendingProgress = () => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -100,6 +128,8 @@ export default function ReaderScreen() {
     setLoadState('loading');
     viewerLoaded.current = false;
     initialPageChangePending.current = false;
+    pdfLoadHandled.current = false;
+    annotationListsBookId.current = null;
     void getBookById(id).then((result) => {
       if (!active) return;
       if (!result) {
@@ -113,8 +143,14 @@ export default function ReaderScreen() {
         setLoadState('missing');
         return;
       }
+      logTiming('book data ready', { currentPage: startPage ?? result.currentPage });
+      logTiming('URI ready', { uriAvailable: true });
       setBook(result);
       setHighlights([]);
+      setBookmarks([]);
+      setQuotes([]);
+      setAnnotationListsLoading(false);
+      setHighlightsLoading(true);
       setPageCount(result.totalPages);
       setPage(result.currentPage);
       setPageInput(String(result.currentPage));
@@ -122,7 +158,7 @@ export default function ReaderScreen() {
       void updateLastOpenedAt(result.id);
       void getReadingHighlights(result.id).then((items) => { if (active) setHighlights(items); }).catch(() => {
         if (active) Alert.alert('Highlights no disponibles', 'No se pudieron cargar los fragmentos guardados de este libro.');
-      });
+      }).finally(() => { if (active) setHighlightsLoading(false); });
     }).catch(() => {
       if (active) {
         setLoadState('error');
@@ -130,7 +166,35 @@ export default function ReaderScreen() {
       }
     });
     return () => { active = false; };
-  }, [id]);
+  }, [id, logTiming, startPage]);
+
+  const handlePdfMounted = useCallback(() => logTiming('PdfView mounted'), [logTiming]);
+  const handlePdfUriReceived = useCallback((uri: string) => {
+    logTiming('PdfView receives URI', { uri });
+    logTiming('initial target requested', { targetPage: startPage ?? book?.currentPage, prop: 'initialPage' });
+  }, [book?.currentPage, logTiming, startPage]);
+
+  const loadAnnotationLists = async () => {
+    if (!book || annotationListsBookId.current === book.id) return;
+    const requestedBookId = book.id;
+    annotationListsBookId.current = requestedBookId;
+    setAnnotationListsLoading(true);
+    try {
+      const bookmarkItems = await getReadingBookmarks(requestedBookId);
+      const quoteItems = await getFavoriteQuotes(requestedBookId);
+      if (annotationListsBookId.current === requestedBookId) {
+        setBookmarks(bookmarkItems);
+        setQuotes(quoteItems);
+      }
+    } catch {
+      if (annotationListsBookId.current === requestedBookId) {
+        annotationListsBookId.current = null;
+        Alert.alert('Anotaciones no disponibles', 'No se pudieron cargar los marcadores y frases guardadas. Inténtalo de nuevo.');
+      }
+    } finally {
+      if (annotationListsBookId.current === requestedBookId) setAnnotationListsLoading(false);
+    }
+  };
 
   useEffect(() => {
     mounted.current = true;
@@ -148,13 +212,20 @@ export default function ReaderScreen() {
     // page. That event is not evidence that the reader moved, so establish the
     // baseline without recording a reading activity.
     if (initialPageChangePending.current) {
-      initialPageChangePending.current = false;
+      if (currentPage === initialTargetPage.current) {
+        initialPageChangePending.current = false;
+        lastObservedPage.current = currentPage;
+        pendingProgrammaticPage.current = null;
+        setRequestedPage(undefined);
+      }
       return;
     }
     const previousPage = lastObservedPage.current ?? page;
     const manualArrowChange = manualAdvanceTarget.current === currentPage;
-    const isUserPageChange = requestedPage == null || manualArrowChange;
+    const isProgrammaticTarget = pendingProgrammaticPage.current === currentPage;
+    const isUserPageChange = (!isProgrammaticTarget && requestedPage == null) || manualArrowChange;
     lastObservedPage.current = currentPage;
+    if (isProgrammaticTarget) pendingProgrammaticPage.current = null;
     if (manualArrowChange) manualAdvanceTarget.current = null;
     setRequestedPage(undefined);
     setPageBookmark(null);
@@ -164,11 +235,23 @@ export default function ReaderScreen() {
     setSelectedHighlight(null);
     setPageCount(event.pageCount);
     setPageInput(String(currentPage));
+    if (!selectionMenuVisible && !selectedHighlight) setControlsVisible(false);
     if (book) {
       scheduleProgressSave(book.id, currentPage, event.pageCount);
       if (isUserPageChange && previousPage != null && previousPage !== currentPage) {
         const visited = Math.abs(previousPage - currentPage) === 1 ? [previousPage, currentPage] : [currentPage];
-        void recordReadingActivity(book.id, visited).catch(() => {
+        void recordReadingActivity(book.id, visited).catch((error: unknown) => {
+          const detail = error instanceof Error
+            ? { message: error.message, stack: error.stack }
+            : { message: String(error), stack: undefined };
+          console.error('[Reader activity] recordReadingActivity failed', {
+            ...detail,
+            bookId: book.id,
+            previousPage,
+            newPage: currentPage,
+            pages: visited,
+            pageCount: event.pageCount,
+          });
           if (!activityWriteFailed.current) {
             activityWriteFailed.current = true;
             Alert.alert('Actividad no guardada', 'No pudimos guardar esta actividad de lectura en el dispositivo.');
@@ -184,9 +267,17 @@ export default function ReaderScreen() {
     setPage(targetPage);
     if (book) scheduleProgressSave(book.id, targetPage, pageCount);
     manualAdvanceTarget.current = countArrowNavigationAsReading ? targetPage : null;
+    pendingProgrammaticPage.current = targetPage;
     // The page prop is implemented by the bundled Expo PDF module native view.
     setRequestedPage(targetPage);
     return true;
+  };
+
+  const openAnnotationPage = (targetPage: number) => {
+    if (navigateToPage(targetPage)) {
+      setAnnotationsMenuVisible(false);
+      setActionsMenuVisible(false);
+    }
   };
 
   const jumpToPage = () => {
@@ -202,6 +293,7 @@ export default function ReaderScreen() {
 
   const choosePersonalAction = (action: 'quote' | 'bookmark' | 'note') => {
     setActionsMenuVisible(false);
+    setControlsVisible(true);
     if (action === 'quote') setQuoteModalVisible(true);
     else if (action === 'bookmark') void editPageBookmark();
     else setNoteEditorVisible(true);
@@ -215,11 +307,20 @@ export default function ReaderScreen() {
 
   const handlePdfLoaded = (event: { pageCount: number }) => {
     if (!mounted.current) return;
+    logTiming('PDF metadata ready', { pageCount: event.pageCount });
+    logTiming('PDF onLoad', { pageCount: event.pageCount });
+    if (pdfLoadHandled.current) {
+      logTiming('duplicate PDF onLoad ignored', { pageCount: event.pageCount });
+      return;
+    }
+    pdfLoadHandled.current = true;
     viewerLoaded.current = true;
-    initialPageChangePending.current = true;
     setPageCount(event.pageCount);
     if (book) {
       const restoredPage = Math.min(startPage ?? book.currentPage, event.pageCount);
+      initialTargetPage.current = restoredPage;
+      initialPageChangePending.current = restoredPage !== 1;
+      logTiming('initial target completed', { targetPage: restoredPage, pageCount: event.pageCount });
       lastObservedPage.current = restoredPage;
       setPage(restoredPage);
       setPageInput(String(restoredPage));
@@ -234,6 +335,7 @@ export default function ReaderScreen() {
     setSelection(event);
     setSelectedHighlight(null);
     setSelectionMenuVisible(true);
+    setControlsVisible(true);
     setPage(selectionPage);
     setPageInput(String(selectionPage));
   };
@@ -259,6 +361,7 @@ export default function ReaderScreen() {
     const found = highlights.find((item) => item.id === event.id);
     if (found) {
       setSelectedHighlight(found);
+      setControlsVisible(true);
       setSelection(null);
       setSelectionMenuVisible(false);
     }
@@ -293,6 +396,7 @@ export default function ReaderScreen() {
     setQuoteText(selection.text);
     setQuoteNote('');
     setSelectionMenuVisible(false);
+    setControlsVisible(true);
     setQuoteModalVisible(true);
     setSelection(null);
     clearNativeSelection();
@@ -303,6 +407,7 @@ export default function ReaderScreen() {
     setPage(selection.pageIndex + 1);
     setNoteInitialContent(`Cita seleccionada:\n“${selection.text}”\n\n`);
     setSelectionMenuVisible(false);
+    setControlsVisible(true);
     setNoteEditorVisible(true);
     setSelection(null);
     clearNativeSelection();
@@ -347,7 +452,8 @@ export default function ReaderScreen() {
     if (!book) return;
     setSavingQuote(true);
     try {
-      await addFavoriteQuote({ bookId: book.id, text, page, note: quoteNote });
+      const saved = await addFavoriteQuote({ bookId: book.id, text, page, note: quoteNote });
+      setQuotes((current) => [saved, ...current]);
       setQuoteModalVisible(false);
       setQuoteText('');
       setQuoteNote('');
@@ -361,6 +467,7 @@ export default function ReaderScreen() {
 
   const editPageBookmark = async () => {
     if (!book || !page) return;
+    setControlsVisible(true);
     try {
       const existing = await getReadingBookmarkAtPage(book.id, page);
       setPageBookmark(existing);
@@ -376,6 +483,7 @@ export default function ReaderScreen() {
     setSavingBookmark(true);
     try {
       const saved = await saveReadingBookmark({ bookId: book.id, page, name: bookmarkName }, pageCount);
+      setBookmarks((current) => [saved, ...current.filter((item) => item.page !== saved.page)]);
       setPageBookmark(saved);
       setBookmarkModalVisible(false);
       setBookmarkName('');
@@ -395,28 +503,35 @@ export default function ReaderScreen() {
   };
 
   return (
-    <ThemedView style={styles.screen}>
-      <View style={[styles.header, landscape && styles.headerLandscape, { backgroundColor: theme.navigation, borderBottomColor: theme.divider }]}>
+    <ThemedView style={[styles.screen, styles.readerRoot]}>
+      {controlsVisible ? <View style={[styles.header, landscape && styles.headerLandscape, { backgroundColor: theme.navigation, borderBottomColor: theme.divider }]}>
         <IconButton accessibilityLabel="Volver" variant="subtle" onPress={returnToOrigin}
           icon={<SymbolView name={{ ios: 'chevron.left', android: 'arrow_back', web: 'arrow_back' }} size={21} tintColor={theme.accent} />} />
         <ThemedText numberOfLines={1} style={styles.title}>{book?.title ?? 'Lector'}</ThemedText>
+        {loadState === 'ready' ? <IconButton accessibilityLabel="Abrir menú de anotaciones" variant="subtle"
+          onPress={() => {
+            setActionsMenuVisible(false);
+            setAnnotationsMenuVisible((visible) => !visible);
+            if (!annotationsMenuVisible) void loadAnnotationLists();
+          }}
+          icon={<SymbolView name={{ ios: 'bookmark', android: 'collections_bookmark', web: 'collections_bookmark' }} size={20} tintColor={theme.accentSoft} />} /> : null}
         {loadState === 'ready' ? <IconButton accessibilityLabel="Acciones personales de lectura" variant="subtle"
-          onPress={() => setActionsMenuVisible((visible) => !visible)}
+          onPress={() => { setAnnotationsMenuVisible(false); setActionsMenuVisible((visible) => !visible); }}
           icon={<SymbolView name={{ ios: 'ellipsis.circle', android: 'more_vert', web: 'more_vert' }} size={21} tintColor={theme.accent} />} /> : null}
         <IconButton accessibilityLabel={controlsVisible ? 'Ocultar controles' : 'Mostrar controles'} variant="subtle"
-          onPress={() => { setActionsMenuVisible(false); setControlsVisible((visible) => !visible); }}
+          onPress={() => { setActionsMenuVisible(false); setAnnotationsMenuVisible(false); setControlsVisible(false); }}
           icon={<SymbolView name={{ ios: controlsVisible ? 'eye.slash' : 'eye', android: controlsVisible ? 'visibility_off' : 'visibility', web: controlsVisible ? 'visibility_off' : 'visibility' }} size={20} tintColor={theme.accentSoft} />} />
-      </View>
+      </View> : null}
 
-      <View style={styles.readingArea}>
+      <View style={styles.readingArea} onTouchStart={() => { if (!controlsVisible) setControlsVisible(true); }}>
         {loadState === 'ready' && book ? (
-          <PdfView key={`${book.id}:${openInstance ?? 'direct'}`} style={styles.pdf} uri={book.filePath} fitMode="width" autoScale doubleTapToZoom
+          <ReaderPdfView key={`${book.id}:${openInstance ?? 'direct'}`} style={styles.pdf} uri={book.filePath} fitMode="width" doubleTapToZoom
             initialPage={startPage ?? book.currentPage} targetPage={requestedPage} withAnimation
             highlightsJson={highlightsJson} selectionClearToken={selectionClearToken} selectionCopyRequest={selectionCopyRequest}
             onLoadComplete={handlePdfLoaded} onPageChanged={handlePageChanged} onError={handlePdfError}
             onTextSelectionStarted={handleTextSelection} onTextSelectionChanged={handleTextSelection}
             onTextSelectionCancelled={handleSelectionCancelled} onSelectionUnavailable={handleSelectionUnavailable}
-            onHighlightTapped={handleHighlightTapped} />
+            onHighlightTapped={handleHighlightTapped} onMounted={handlePdfMounted} onUriReceived={handlePdfUriReceived} />
         ) : (
           <View style={styles.state}>
             {loadState === 'loading' ? <ActivityIndicator color={theme.accent} /> : null}
@@ -447,6 +562,42 @@ export default function ReaderScreen() {
               <SymbolView name={{ ios: 'square.and.pencil', android: 'edit_note', web: 'edit_note' }} size={19} tintColor={theme.accentSoft} />
               <ThemedText type="smallBold">Escribir nota</ThemedText>
             </Pressable>
+          </View>
+        </View> : null}
+        {annotationsMenuVisible && loadState === 'ready' ? <View style={styles.annotationsOverlay}>
+          <Pressable accessibilityLabel="Cerrar menú de anotaciones" style={styles.annotationsBackdrop} onPress={() => setAnnotationsMenuVisible(false)} />
+          <View style={[styles.annotationsPanel, { top: controlsVisible ? (landscape ? 56 : 66) : Spacing.two, backgroundColor: theme.surfaceElevated, borderColor: theme.border }]}>
+            <View style={styles.annotationHeading}>
+              <ThemedText type="subtitle">Anotaciones</ThemedText>
+              <IconButton accessibilityLabel="Cerrar anotaciones" variant="subtle" onPress={() => setAnnotationsMenuVisible(false)}
+                icon={<SymbolView name={{ ios: 'xmark', android: 'close', web: 'close' }} size={18} tintColor={theme.textSecondary} />} />
+            </View>
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.annotationList}>
+              {annotationListsLoading || highlightsLoading ? <ThemedText type="small" themeColor="textMuted">Cargando anotaciones…</ThemedText> : null}
+              <View style={styles.annotationSection}>
+                <ThemedText type="smallBold" themeColor="textMuted">HIGHLIGHTS · {highlights.length}</ThemedText>
+                {highlights.length ? highlights.map((item) => <Pressable key={item.id} accessibilityRole="button"
+                  accessibilityLabel={`Ir al highlight de la página ${item.page}`} onPress={() => openAnnotationPage(item.page)} style={styles.annotationItem}>
+                  <ThemedText numberOfLines={2}>{item.text}</ThemedText><ThemedText type="small" themeColor="textMuted">Página {item.page}</ThemedText>
+                </Pressable>) : <ThemedText type="small" themeColor="textMuted">Todavía no hay highlights.</ThemedText>}
+              </View>
+              <View style={styles.annotationSection}>
+                <ThemedText type="smallBold" themeColor="textMuted">MARCADORES · {bookmarks.length}</ThemedText>
+                {bookmarks.length ? bookmarks.map((item) => <Pressable key={item.id} accessibilityRole="button"
+                  accessibilityLabel={`Ir a ${item.name}, página ${item.page}`} onPress={() => openAnnotationPage(item.page)} style={styles.annotationItem}>
+                  <ThemedText type="smallBold" numberOfLines={2}>{item.name}</ThemedText><ThemedText type="small" themeColor="textMuted">Página {item.page}</ThemedText>
+                </Pressable>) : <ThemedText type="small" themeColor="textMuted">Todavía no hay marcadores.</ThemedText>}
+              </View>
+              <View style={styles.annotationSection}>
+                <ThemedText type="smallBold" themeColor="textMuted">FRASES GUARDADAS · {quotes.length}</ThemedText>
+                {quotes.length ? quotes.map((item) => <Pressable key={item.id} accessibilityRole="button"
+                  accessibilityLabel={item.page == null ? 'Frase sin página asociada' : `Ir a la frase de la página ${item.page}`}
+                  disabled={item.page == null} onPress={() => { if (item.page != null) openAnnotationPage(item.page); }} style={styles.annotationItem}>
+                  <ThemedText numberOfLines={3}>{item.text}</ThemedText>
+                  <ThemedText type="small" themeColor="textMuted">{item.page == null ? 'Sin página asociada' : `Página ${item.page}`}</ThemedText>
+                </Pressable>) : <ThemedText type="small" themeColor="textMuted">Todavía no hay frases guardadas.</ThemedText>}
+              </View>
+            </ScrollView>
           </View>
         </View> : null}
         {selectionMenuVisible && selection ? <View style={[styles.selectionMenu, { backgroundColor: theme.surfaceElevated, borderColor: theme.border }]}>
@@ -562,7 +713,8 @@ export default function ReaderScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, minWidth: 0 },
-  header: { minHeight: 58, paddingHorizontal: Spacing.two, flexDirection: 'row', alignItems: 'center', gap: Spacing.two, borderBottomWidth: Borders.subtle },
+  readerRoot: { position: 'relative' },
+  header: { position: 'absolute', top: 0, left: 0, right: 0, minHeight: 58, paddingHorizontal: Spacing.two, flexDirection: 'row', alignItems: 'center', gap: Spacing.two, borderBottomWidth: Borders.subtle, zIndex: 20, elevation: 20 },
   headerLandscape: { minHeight: 48 },
   title: { flex: 1, textAlign: 'center' },
   readingArea: { flex: 1, minHeight: 0, position: 'relative', backgroundColor: '#090711' },
@@ -577,6 +729,13 @@ const styles = StyleSheet.create({
   actionsMenuOverlay: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, zIndex: 5 },
   actionsMenuBackdrop: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: 'rgba(4, 2, 12, 0.18)' },
   actionsMenu: { position: 'absolute', top: Spacing.two, right: Spacing.two, width: 252, maxWidth: '90%', borderWidth: Borders.subtle, borderRadius: 20, padding: Spacing.three, gap: Spacing.two, elevation: 12 },
+  annotationsOverlay: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, zIndex: 8 },
+  annotationsBackdrop: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: 'rgba(4, 2, 12, 0.2)' },
+  annotationsPanel: { position: 'absolute', left: Spacing.two, bottom: Spacing.two, width: 360, maxWidth: '92%', maxHeight: '78%', borderWidth: Borders.subtle, borderRadius: 20, padding: Spacing.three, elevation: 14 },
+  annotationHeading: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.two },
+  annotationList: { gap: Spacing.three, paddingBottom: Spacing.two },
+  annotationSection: { gap: Spacing.one },
+  annotationItem: { padding: Spacing.two, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.035)', gap: 3 },
   selectionMenu: { position: 'absolute', zIndex: 6, top: Spacing.two, left: Spacing.two, right: Spacing.two, alignSelf: 'center', maxWidth: 620, borderWidth: Borders.subtle, borderRadius: 18, paddingHorizontal: Spacing.three, paddingVertical: Spacing.two, gap: Spacing.one, elevation: 12 },
   selectionPreview: { lineHeight: 21 }, selectionActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one, flexWrap: 'wrap' },
   markerAction: { width: 42, height: 38, alignItems: 'center', justifyContent: 'center', borderRadius: 12 },

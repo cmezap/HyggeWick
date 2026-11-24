@@ -29,13 +29,16 @@ El Reader carga los highlights del libro y los entrega al overlay nativo; al cre
 
 ## Hotfix 5.0.2
 
-- Crash `Already closed`: `KJExpoPdfView.onDetachedFromWindow()` liberaba el documento PDFium adicional del controlador y luego llamaba `PDFView.recycle()` después de `super`. El `PDFView` hijo ya recicla su propio documento al desprenderse, así que esa segunda llamada cerraba por duplicado páginas/documento que pertenecen al visor. Se quitó la llamada manual; el controlador sigue cerrando únicamente su documento PDFium y sus callbacks de carga quedan invalidados por generación.
+- Crash `Already closed`: el hotfix inicial quitó la llamada manual a `PDFView.recycle()` después de `super` en `KJExpoPdfView.onDetachedFromWindow()`, pero el crash persistió en el Development Client. Esa explicación no resolvía la causa observada.
+- Diagnóstico confirmado en `pdfiumandroid 1.0.32`: AndroidPdfViewer crea su `PdfiumCore` con `AlreadyClosedBehavior.IGNORE`, pero `PdfTextSelectionController` creaba otro con `PdfiumCore(context)`, cuyo `Config` por defecto es `EXCEPTION`. `AlreadyClosedBehavior` se almacena en configuración global. Al desmontar, `PdfFile.dispose()` cierra primero el documento y luego sus páginas; con `EXCEPTION`, el cierre de página lanza y la disposición queda interrumpida. Una llamada posterior a `recycle()` encuentra el documento ya cerrado.
+- Corrección aplicada en `native/android/PdfTextSelectionController.kt`: el controlador crea su core con `Config(alreadyClosedBehavior = AlreadyClosedBehavior.IGNORE)`, conservando el comportamiento global que necesita el visor. `scripts/patch-expo-pdf.js` copia este archivo al paquete `@kishannareshpal/expo-pdf`; `postinstall` ejecuta el parche al instalar dependencias.
+- Validación reportada en el Development Client: abrir el PDF, salir del Reader y volver al menú ya no produce `Already closed` ni crash. No requiere otra build mientras se use un cliente que incluya la corrección nativa.
 - El menú de selección usa el icono de resaltador y abre cuatro muestras táctiles persistidas en SQLite: miel `#EBCB76`, salvia `#A8CFA7`, rosa `#E7AFC3` y lavanda `#D7AFE0`. La selección nativa permanece hasta aplicar el color; highlights existentes conservan su color guardado.
 - El control de página redujo alturas, paddings y anchos; el texto de progreso admite truncado y el campo de página ajusta su ancho para pantallas pequeñas. El salto sigue usando la misma prop `targetPage`.
 - Book Detail carga las secciones SQLite en serie porque sus repositorios inicializan tablas/migraciones en la misma base. Las listas vacías conservan sus empty states y los errores de consulta reales continúan visibles.
 - Reader ignora eventos tardíos después del unmount y evita aplicar respuestas de highlights de una pantalla ya desmontada.
 
-QA del hotfix: TypeScript, patch idempotente, diff y revisión de ownership/callbacks nativos. No se ejecutó build Gradle/EAS ni se generó APK. Expo QR cubre los cambios JS/UI; el lifecycle `PDFView` y el código PDFium requieren una build Android futura y prueba física para confirmar el cierre al salir/pausar.
+QA del hotfix inicial: TypeScript, patch idempotente, diff y revisión de ownership/callbacks nativos; esas verificaciones no evitaron el crash al salir del Reader. El ajuste posterior de `AlreadyClosedBehavior.IGNORE` sí quedó validado por el usuario en el Development Client: abrir PDF, salir del Reader y volver al menú funciona sin crash.
 
 ## Etapa 5.1 — Perfil del lector
 
@@ -43,12 +46,22 @@ QA del hotfix: TypeScript, patch idempotente, diff y revisión de ownership/call
 - Nombre, frase y URI de avatar viven en `reader_profile`. El picker existente `expo-document-picker` se limita a imágenes; el archivo se copia a almacenamiento privado de la app para conservarlo entre reinicios. Cancelar el picker no cambia el perfil.
 - Estadísticas reales: libros terminados y en lectura salen de `books`/`summarizeReadingProgress`; páginas visitadas provienen de destinos de página únicos por libro. No se muestra tiempo: no hay sesiones/tiempos persistidos fiables. Favoritos siguen disponibles en `books.is_favorite`, sin sumar otra card al perfil.
 - `reading_activity_days` guarda una fila por fecha local. `reading_page_visits` deduplica páginas por libro y usa FK en cascada. Se registra solo al cambiar de página por lectura/controles anterior-siguiente; abrir/restaurar el PDF y saltos con el campo de página no cuentan. Los saltos de varias páginas solo registran destino, nunca páginas intermedias.
+- `recordReadingActivity` serializa las transacciones con una cola de promesas. Cambios rápidos de página no abren transacciones concurrentes sobre la conexión del perfil; un fallo individual se propaga al Reader y no bloquea las escrituras siguientes. `updateReadingProgress` sigue siendo un `UPDATE` asíncrono sin transacción explícita.
 - Racha actual admite lectura hoy o ayer; la continuidad se calcula con claves `YYYY-MM-DD` y calendario local. El récord se calcula a partir de días únicos y se persiste en `reader_profile`; no hay actividad retroactiva. Una visita a una página ya contada puede sumar un nuevo día sin aumentar páginas únicas.
 - No se alteran filas existentes de libros ni entidades de lectura. Las tablas nuevas se crean idempotentemente cuando se inicializa el repositorio del perfil, una vez cargado el catálogo de libros.
 - QA: `npx tsc --noEmit`, `npx expo config --type public` y `git diff --check` correctos. Revisión de flujos, rutas, assets y reglas de actividad; no se hizo prueba física ni verificación de persistencia/reinicio sobre dispositivo.
 - EAS Android `development` (APK interno): build [`6a5380b4-a9a8-4553-be06-a4e1b3561cef`](https://expo.dev/accounts/erickbaladi/projects/HyggeWick/builds/6a5380b4-a9a8-4553-be06-a4e1b3561cef), iniciado antes del hotfix. EAS usó las credenciales Android remotas configuradas. El resultado final no quedó anotado.
 
 Desde la selección, “Frase” prellena texto y página en el flujo existente de Quotes; “Nota” inicia el editor existente con la cita distinguida en el contenido para añadir una reflexión. “Copiar” usa el portapapeles Android. Las demás funciones de navegación, marcadores y progreso siguen usando las rutas existentes.
+
+## Reader — apertura, anotaciones y controles
+
+- `src/components/reader-pdf-view.tsx` configura la vista nativa y `initialPage` antes de asignar la URI. Así, la asignación de URI inicia el PDF con la configuración final y evita las recargas de arranque provocadas por setters como `fitMode`/`autoScale`. `autoScale` conserva su valor predeterminado nativo (`true`). No se cambió código nativo.
+- La página inicial se aplica con `initialPage` antes de abrir el documento. No se vuelve a pedir un salto inicial desde `onLoad`; los saltos posteriores, incluidos “Ir a página” y las anotaciones, reutilizan `targetPage`/`navigateToPage`.
+- Los logs `[Reader timing]` cuentan y timestampan montaje del Reader/PdfView, datos del libro, URI, `onLoad`, solicitud y finalización de página. URI se registra cuando la vista la recibe. `PDF metadata ready` y `PDF onLoad` proceden del mismo callback.
+- El menú de anotaciones presenta highlights, marcadores y frases. Highlights usan la consulta ya realizada al abrir; marcadores y frases se cargan una vez al abrir el menú. Elegir una anotación navega con `navigateToPage`.
+- Header y controles empiezan ocultos, reaparecen al tocar el área de lectura y se ocultan al cambiar de página. Selección y acciones de anotación los vuelven a mostrar. No se usa un temporizador de ocultación.
+- Verificación pendiente de esta iteración: abrir PDFs de varias páginas, confirmar una carga y navegación inicial por apertura en los logs, probar saltos internos, lista de anotaciones, selección y controles en el Development Client. No se ejecutó build.
 
 ## Límites conocidos
 
@@ -62,7 +75,7 @@ Desde la selección, “Frase” prellena texto y página en el flujo existente 
 ## Verificaciones realizadas
 
 - `npx tsc --noEmit`: correcto.
-- `npm run postinstall`: correcto en ejecuciones repetidas; el patch y las copias nativas se aplican sin error.
+- `npm run postinstall`: correcto en ejecuciones previas y repetidas; el patch y las copias nativas se aplicaron sin error. `AlreadyClosedBehavior.IGNORE` se validó posteriormente en el Development Client según reporte del usuario.
 - Prueba SQLite aislada: migración/idempotencia, inserción y upsert, consulta por libro/página, cambio de color y borrado en cascada: correcto.
 - `git diff --check`: correcto en la última verificación.
 - `npx expo config --type public`: configuración válida; package name `com.hyggewick.app`.

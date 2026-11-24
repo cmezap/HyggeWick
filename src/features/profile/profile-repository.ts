@@ -5,6 +5,7 @@ import { calculateBestStreak, calculateCurrentStreak, localDateKey } from './rea
 
 const DATABASE_NAME = 'hyggewick.db';
 let databasePromise: Promise<SQLite.SQLiteDatabase> | undefined;
+let readingActivityQueue: Promise<void> = Promise.resolve();
 
 export type ReaderProfile = {
   name: string;
@@ -106,24 +107,31 @@ export async function storeProfileAvatar(sourceUri: string, fileName: string) {
   return destination.uri;
 }
 
-export async function recordReadingActivity(bookId: string, pages: readonly number[]) {
-  const day = localDateKey();
-  const validPages = [...new Set(pages.filter((page) => Number.isInteger(page) && page >= 1))];
-  if (validPages.length === 0) return;
-  const db = await database();
-  await db.withTransactionAsync(async () => {
-    await db.runAsync('INSERT OR IGNORE INTO reading_activity_days (activity_date, first_seen_at) VALUES (?, ?)', day, new Date().toISOString());
-    for (const page of validPages) {
-      await db.runAsync('INSERT OR IGNORE INTO reading_page_visits (book_id, page, activity_date) VALUES (?, ?, ?)', bookId, page, day);
-    }
-    const dayRows = await db.getAllAsync<{ activity_date: string }>('SELECT activity_date FROM reading_activity_days ORDER BY activity_date');
-    const dates = dayRows.map((row) => row.activity_date);
-    const best = calculateBestStreak(dates);
-    const profile = await db.getFirstAsync<{ best_streak: number }>('SELECT best_streak FROM reader_profile WHERE profile_id = 1');
-    if (best.length > Number(profile?.best_streak ?? 0)) {
-      await db.runAsync('UPDATE reader_profile SET best_streak = ?, best_streak_date = ?, updated_at = ? WHERE profile_id = 1', best.length, best.endDate, new Date().toISOString());
-    }
+export function recordReadingActivity(bookId: string, pages: readonly number[]): Promise<void> {
+  const operation = readingActivityQueue.then(async () => {
+    const day = localDateKey();
+    const validPages = [...new Set(pages.filter((page) => Number.isInteger(page) && page >= 1))];
+    if (validPages.length === 0) return;
+    const db = await database();
+    await db.withTransactionAsync(async () => {
+      await db.runAsync('INSERT OR IGNORE INTO reading_activity_days (activity_date, first_seen_at) VALUES (?, ?)', day, new Date().toISOString());
+      for (const page of validPages) {
+        await db.runAsync('INSERT OR IGNORE INTO reading_page_visits (book_id, page, activity_date) VALUES (?, ?, ?)', bookId, page, day);
+      }
+      const dayRows = await db.getAllAsync<{ activity_date: string }>('SELECT activity_date FROM reading_activity_days ORDER BY activity_date');
+      const dates = dayRows.map((row) => row.activity_date);
+      const best = calculateBestStreak(dates);
+      const profile = await db.getFirstAsync<{ best_streak: number }>('SELECT best_streak FROM reader_profile WHERE profile_id = 1');
+      if (best.length > Number(profile?.best_streak ?? 0)) {
+        await db.runAsync('UPDATE reader_profile SET best_streak = ?, best_streak_date = ?, updated_at = ? WHERE profile_id = 1', best.length, best.endDate, new Date().toISOString());
+      }
+    });
   });
+
+  // Keep the queue usable after a failed write while returning this operation's
+  // rejection to the caller so Reader can report the actual persistence error.
+  readingActivityQueue = operation.then(() => undefined, () => undefined);
+  return operation;
 }
 
 export async function getReadingActivitySummary(): Promise<ReadingActivitySummary> {
