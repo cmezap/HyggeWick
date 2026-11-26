@@ -1,6 +1,6 @@
 import { type HighlightTappedEventPayload, type OnErrorEventPayload, type OnPageChangedEventPayload, type SelectionUnavailableEventPayload, type TextSelectionCancelledEventPayload, type TextSelectionEventPayload } from '@kishannareshpal/expo-pdf';
 import { File } from 'expo-file-system';
-import { router, useLocalSearchParams, type Href } from 'expo-router';
+import { router, useLocalSearchParams, usePathname, type Href } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from 'react-native';
 import { SymbolView } from 'expo-symbols';
@@ -20,9 +20,11 @@ import { recordReadingActivity } from '@/features/profile/profile-repository';
 import { Borders, Spacing } from '@/theme';
 
 type LoadState = 'loading' | 'ready' | 'missing' | 'error';
+let readerSequence = 0;
 
 export default function ReaderScreen() {
   const theme = useTheme();
+  const pathname = usePathname();
   const { width, height } = useWindowDimensions();
   const landscape = width > height;
   const { bookId, returnTo, openId, page: pageParam } = useLocalSearchParams<{ bookId?: string | string[]; returnTo?: string | string[]; openId?: string | string[]; page?: string | string[] }>();
@@ -32,19 +34,9 @@ export default function ReaderScreen() {
   const requestedStartPage = Array.isArray(pageParam) ? pageParam[0] : pageParam;
   const parsedStartPage = Number(requestedStartPage);
   const startPage = Number.isInteger(parsedStartPage) && parsedStartPage > 0 ? parsedStartPage : null;
-  const readerOpenedAt = useRef<number | null>(null);
-  const timingCounts = useRef<Record<string, number>>({});
-  const logTiming = useCallback((event: string, details: Record<string, unknown> = {}) => {
-    const count = (timingCounts.current[event] ?? 0) + 1;
-    timingCounts.current[event] = count;
-    const at = Date.now();
-    console.info(`[Reader timing] ${event} #${count}`, {
-      at,
-      elapsedMs: at - (readerOpenedAt.current ?? at),
-      bookId: id,
-      ...details,
-    });
-  }, [id]);
+  const readerInstanceId = useRef<string | null>(null);
+  if (readerInstanceId.current == null) readerInstanceId.current = `reader-${++readerSequence}`;
+  const instanceId = readerInstanceId.current;
   const [book, setBook] = useState<Book | null>(null);
   const [loadState, setLoadState] = useState<LoadState>('loading');
   const [page, setPage] = useState<number | null>(null);
@@ -57,6 +49,22 @@ export default function ReaderScreen() {
   const [errorMessage, setErrorMessage] = useState('');
   const [pageInput, setPageInput] = useState('');
   const [requestedPage, setRequestedPage] = useState<number | undefined>(undefined);
+  const readerContext = useRef({ pathname, bookId: id, openId: openInstance, pageParam: startPage, currentPage: book?.currentPage, initialPage: startPage ?? book?.currentPage, requestedPage });
+  readerContext.current = { pathname, bookId: id, openId: openInstance, pageParam: startPage, currentPage: book?.currentPage, initialPage: startPage ?? book?.currentPage, requestedPage };
+  const readerOpenedAt = useRef<number | null>(null);
+  const timingCounts = useRef<Record<string, number>>({});
+  const logTiming = useCallback((event: string, details: Record<string, unknown> = {}) => {
+    const count = (timingCounts.current[event] ?? 0) + 1;
+    timingCounts.current[event] = count;
+    const at = Date.now();
+    console.info(`[Reader timing] ${event} #${count}`, {
+      at,
+      elapsedMs: at - (readerOpenedAt.current ?? at),
+      readerInstanceId: instanceId,
+      ...readerContext.current,
+      ...details,
+    });
+  }, [instanceId]);
   const [quoteModalVisible, setQuoteModalVisible] = useState(false);
   const [quoteText, setQuoteText] = useState('');
   const [quoteNote, setQuoteNote] = useState('');
@@ -91,9 +99,13 @@ export default function ReaderScreen() {
   const manualAdvanceTarget = useRef<number | null>(null);
 
   useEffect(() => {
-    if (readerOpenedAt.current == null) readerOpenedAt.current = Date.now();
-    logTiming('Reader mounted', { pageParam: startPage });
-  }, [logTiming, startPage]);
+    readerOpenedAt.current = Date.now();
+    logTiming('Reader mounted');
+  }, []);
+
+  useEffect(() => {
+    logTiming('requestedPage changed');
+  }, [requestedPage, logTiming]);
 
   const flushPendingProgress = () => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -128,7 +140,11 @@ export default function ReaderScreen() {
     setLoadState('loading');
     viewerLoaded.current = false;
     initialPageChangePending.current = false;
+    initialTargetPage.current = null;
+    lastObservedPage.current = null;
+    pendingProgrammaticPage.current = null;
     pdfLoadHandled.current = false;
+    setRequestedPage(undefined);
     annotationListsBookId.current = null;
     void getBookById(id).then((result) => {
       if (!active) return;
@@ -143,7 +159,7 @@ export default function ReaderScreen() {
         setLoadState('missing');
         return;
       }
-      logTiming('book data ready', { currentPage: startPage ?? result.currentPage });
+      logTiming('book data ready', { currentPage: result.currentPage, initialPage: startPage ?? result.currentPage });
       logTiming('URI ready', { uriAvailable: true });
       setBook(result);
       setHighlights([]);
@@ -166,12 +182,11 @@ export default function ReaderScreen() {
       }
     });
     return () => { active = false; };
-  }, [id, logTiming, startPage]);
+  }, [id, logTiming, openInstance, startPage]);
 
-  const handlePdfMounted = useCallback(() => logTiming('PdfView mounted'), [logTiming]);
   const handlePdfUriReceived = useCallback((uri: string) => {
     logTiming('PdfView receives URI', { uri });
-    logTiming('initial target requested', { targetPage: startPage ?? book?.currentPage, prop: 'initialPage' });
+    logTiming('initial target requested', { initialPage: startPage ?? book?.currentPage, prop: 'initialPage' });
   }, [book?.currentPage, logTiming, startPage]);
 
   const loadAnnotationLists = async () => {
@@ -199,13 +214,15 @@ export default function ReaderScreen() {
   useEffect(() => {
     mounted.current = true;
     return () => {
+      logTiming('Reader unmounted');
       mounted.current = false;
       viewerLoaded.current = false;
       flushPendingProgress();
     };
   }, []);
 
-  const handlePageChanged = (event: OnPageChangedEventPayload) => {
+  const handlePageChanged = (event: OnPageChangedEventPayload, pdfViewInstanceId: string) => {
+    logTiming('onPageChanged received', { pdfViewInstanceId, page: event.pageIndex, pageIndex: event.pageIndex, pageCount: event.pageCount });
     if (!viewerLoaded.current) return;
     const currentPage = event.pageIndex + 1;
     // PDFView can emit a delayed page-change event for its own initial/restored
@@ -305,10 +322,10 @@ export default function ReaderScreen() {
     setErrorMessage(`No se pudo abrir el PDF: ${event.message}`);
   };
 
-  const handlePdfLoaded = (event: { pageCount: number }) => {
+  const handlePdfLoaded = (event: { pageCount: number }, pdfViewInstanceId: string) => {
     if (!mounted.current) return;
-    logTiming('PDF metadata ready', { pageCount: event.pageCount });
-    logTiming('PDF onLoad', { pageCount: event.pageCount });
+    logTiming('PDF metadata ready', { pdfViewInstanceId, pageCount: event.pageCount });
+    logTiming('PDF onLoad', { pdfViewInstanceId, pageCount: event.pageCount });
     if (pdfLoadHandled.current) {
       logTiming('duplicate PDF onLoad ignored', { pageCount: event.pageCount });
       return;
@@ -525,13 +542,13 @@ export default function ReaderScreen() {
 
       <View style={styles.readingArea} onTouchStart={() => { if (!controlsVisible) setControlsVisible(true); }}>
         {loadState === 'ready' && book ? (
-          <ReaderPdfView key={`${book.id}:${openInstance ?? 'direct'}`} style={styles.pdf} uri={book.filePath} fitMode="width" doubleTapToZoom
+          <ReaderPdfView key={`${book.id}:${openInstance ?? 'direct'}`} readerInstanceId={instanceId} bookId={book.id} openId={openInstance} style={styles.pdf} uri={book.filePath} fitMode="width" doubleTapToZoom
             initialPage={startPage ?? book.currentPage} targetPage={requestedPage} withAnimation
             highlightsJson={highlightsJson} selectionClearToken={selectionClearToken} selectionCopyRequest={selectionCopyRequest}
             onLoadComplete={handlePdfLoaded} onPageChanged={handlePageChanged} onError={handlePdfError}
             onTextSelectionStarted={handleTextSelection} onTextSelectionChanged={handleTextSelection}
             onTextSelectionCancelled={handleSelectionCancelled} onSelectionUnavailable={handleSelectionUnavailable}
-            onHighlightTapped={handleHighlightTapped} onMounted={handlePdfMounted} onUriReceived={handlePdfUriReceived} />
+            onHighlightTapped={handleHighlightTapped} onUriReceived={handlePdfUriReceived} />
         ) : (
           <View style={styles.state}>
             {loadState === 'loading' ? <ActivityIndicator color={theme.accent} /> : null}

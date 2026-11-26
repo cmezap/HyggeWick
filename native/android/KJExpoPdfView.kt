@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Color
 import android.graphics.Rect
 import android.net.Uri
+import android.util.Log
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.views.ExpoView
 import com.github.barteksc.pdfviewer.PDFView
@@ -58,7 +59,7 @@ class KJExpoPdfView(context: Context, appContext: AppContext) : ExpoView(context
   private var targetPage: Int? = null
   private var withAnimation: Boolean = true
   private var loadedPageCount: Int = 0
-  private var applyingInitialPage: Boolean = false
+  private var hasActiveLoad: Boolean = false
   private val selectionController by lazy {
     PdfTextSelectionController(
       context,
@@ -87,6 +88,7 @@ class KJExpoPdfView(context: Context, appContext: AppContext) : ExpoView(context
     // The PDFView child recycles its own document as it detaches. Only release
     // the separately-owned PDFium text document here; calling recycle() after
     // super would close the viewer document for a second time.
+    hasActiveLoad = false
     selectionController.releaseDocument()
     super.onDetachedFromWindow()
   }
@@ -97,22 +99,28 @@ class KJExpoPdfView(context: Context, appContext: AppContext) : ExpoView(context
       return
     }
 
-    try {
-      this.uri = uri.toUri()
+    val nextUri = try {
+      uri.toUri()
     } catch (_: Exception) {
       this.reportError(ErrorCode.invalidUri, "The provided URI is invalid")
+      return
     }
+    if (nextUri == this.uri && hasActiveLoad) return
+    this.uri = nextUri
 
     this.reloadPdf()
   }
 
   fun setPassword(password: String?) {
-    this.password = password;
+    if (this.password == password) return
+    this.password = password
     this.reloadPdf()
   }
 
   fun setPagingEnabled(enabled: Boolean?) {
-    this.isPagingEnabled = enabled ?: DEFAULT_PAGING_ENABLED
+    val next = enabled ?: DEFAULT_PAGING_ENABLED
+    if (this.isPagingEnabled == next) return
+    this.isPagingEnabled = next
     this.reloadPdf()
   }
 
@@ -122,37 +130,50 @@ class KJExpoPdfView(context: Context, appContext: AppContext) : ExpoView(context
   }
 
   fun setHorizontalModeEnabled(enabled: Boolean?) {
-    this.isHorizontalModeEnabled = enabled ?: DEFAULT_HORIZONTAL_MODE_ENABLED
+    val next = enabled ?: DEFAULT_HORIZONTAL_MODE_ENABLED
+    if (this.isHorizontalModeEnabled == next) return
+    this.isHorizontalModeEnabled = next
     this.reloadPdf()
   }
 
   fun setPageGap(pageGap: Int?) {
-    this.pageGap = pageGap ?: DEFAULT_PAGE_GAP
+    val next = pageGap ?: DEFAULT_PAGE_GAP
+    if (this.pageGap == next) return
+    this.pageGap = next
     this.reloadPdf()
   }
 
   fun setContentPadding(rect: Rect?) {
-    this.contentPadding = rect ?: DEFAULT_CONTENT_PADDING
+    val next = rect ?: DEFAULT_CONTENT_PADDING
+    if (this.contentPadding == next) return
+    this.contentPadding = next
     this.reloadPdf()
   }
 
   fun setFitMode(mode: FitMode?) {
-    this.fitMode = mode ?: DEFAULT_FIT_MODE
+    val next = mode ?: DEFAULT_FIT_MODE
+    if (this.fitMode == next) return
+    this.fitMode = next
     this.reloadPdf()
   }
 
   fun setPageColorInverted(enabled: Boolean?) {
-    this.isPageColorInverted = enabled ?: DEFAULT_PAGE_COLOR_INVERTED_ENABLED
+    val next = enabled ?: DEFAULT_PAGE_COLOR_INVERTED_ENABLED
+    if (this.isPageColorInverted == next) return
+    this.isPageColorInverted = next
     this.reloadPdf()
   }
 
   fun setAutoScaleEnabled(enabled: Boolean?) {
-    this.autoScaleEnabled = enabled ?: DEFAULT_AUTO_SCALE_ENABLED
+    val next = enabled ?: DEFAULT_AUTO_SCALE_ENABLED
+    if (this.autoScaleEnabled == next) return
+    this.autoScaleEnabled = next
     this.reloadPdf()
   }
 
   fun setInitialPage(page: Int?) {
     initialPage = (page ?: 1).coerceAtLeast(1)
+    Log.i("KJExpoPdf", "initialPage=$initialPage")
     if (loadedPageCount > 0 && targetPage == null) pdfView.jumpTo(initialPage.coerceAtMost(loadedPageCount) - 1, false)
   }
   fun setWithAnimation(enabled: Boolean?) { withAnimation = enabled ?: true }
@@ -169,6 +190,7 @@ class KJExpoPdfView(context: Context, appContext: AppContext) : ExpoView(context
   }
 
   private fun reloadPdf() {
+    hasActiveLoad = false
     selectionController.releaseDocument()
     loadedPageCount = 0
     if (!this.pdfView.isRecycled) {
@@ -176,6 +198,9 @@ class KJExpoPdfView(context: Context, appContext: AppContext) : ExpoView(context
     }
 
     val currentUri = this.uri ?: return
+    val pageToOpen = (targetPage ?: initialPage).coerceAtLeast(1)
+    val defaultPageIndex = pageToOpen - 1
+    Log.i("KJExpoPdf", "reloadPdf pageToOpen=$pageToOpen defaultPage=$defaultPageIndex")
 
     val pdfBuilder = try {
       if (currentUri.scheme == "content") {
@@ -192,6 +217,7 @@ class KJExpoPdfView(context: Context, appContext: AppContext) : ExpoView(context
     }
 
     pdfBuilder
+      .defaultPage(defaultPageIndex)
       .pageFitPolicy(this.fitMode.toFitPolicy())
       .enableDoubletap(this.isDoubleTapZoomEnabled)
       .swipeHorizontal(this.isHorizontalModeEnabled)
@@ -209,11 +235,8 @@ class KJExpoPdfView(context: Context, appContext: AppContext) : ExpoView(context
           this.reportError(ErrorCode.invalidDocument, "The PDF has no pages")
           return@onLoad
         }
+        Log.i("KJExpoPdf", "onLoad(pageCount=$pageCount)")
         loadedPageCount = pageCount
-        val pageToOpen = (targetPage ?: initialPage).coerceIn(1, pageCount)
-        applyingInitialPage = true
-        pdfView.jumpTo(pageToOpen - 1, false)
-        applyingInitialPage = false
         if (pageCount > 0) this.uri?.let { selectionController.load(it, password) }
         this.onLoadComplete(
           mapOf(
@@ -222,7 +245,7 @@ class KJExpoPdfView(context: Context, appContext: AppContext) : ExpoView(context
         )
       }
       .onPageChange { pageIndex, pageCount ->
-        if (applyingInitialPage) return@onPageChange
+        Log.i("KJExpoPdf", "onPageChanged(pageIndex=$pageIndex)")
         selectionController.clearForPageChange(pageIndex)
         this.onPageChanged(
           mapOf(
@@ -235,6 +258,7 @@ class KJExpoPdfView(context: Context, appContext: AppContext) : ExpoView(context
       .onTap(OnTapListener { event -> selectionController.onTap(event) })
       .onDrawAll(selectionController.drawListenerForPages())
 
+    hasActiveLoad = true
     post {
       pdfBuilder
         .onError { e ->
@@ -267,7 +291,7 @@ class KJExpoPdfView(context: Context, appContext: AppContext) : ExpoView(context
 
   override fun onAttachedToWindow() {
     super.onAttachedToWindow()
-    if (this.uri != null) this.reloadPdf()
+    if (this.uri != null && !hasActiveLoad) this.reloadPdf()
   }
 
   private fun reportError(error: ErrorCode, message: String) {

@@ -18,7 +18,7 @@ export function openBook(book: Book, returnTo: string, startPage?: number): Book
     return 'inaccessible';
   }
   const openId = `${Date.now()}-${++openSequence}`;
-  const pageParam = startPage && Number.isInteger(startPage) && startPage >= 1 ? `&page=${startPage}` : '';
+  const pageParam = startPage && Number.isInteger(startPage) && startPage >= 1 ? `&page=${startPage}` : '&page=';
   router.push((`/reader?bookId=${encodeURIComponent(book.id)}&returnTo=${encodeURIComponent(returnTo)}&openId=${openId}${pageParam}`) as Href);
   return null;
 }
