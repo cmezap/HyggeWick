@@ -22,6 +22,60 @@ const DATABASE_NAME = 'hyggewick.db';
 const HIGHLIGHTS_MIGRATION = 'reading_highlights_v1';
 export const DEFAULT_HIGHLIGHT_COLOR = '#EBCB76';
 export const HIGHLIGHT_COLORS = ['#EBCB76', '#A8CFA7', '#E7AFC3', '#D7AFE0'] as const;
+
+/** Merges per-character/word PDFium rects on the same visual line into continuous Word-style highlight bars. */
+export function mergeContinuousHighlightRects(rects: HighlightRect[]): HighlightRect[] {
+  if (rects.length <= 1) return rects;
+
+  const sortedByTop = [...rects].sort((a, b) => a.top - b.top || a.left - b.left);
+  const lines: HighlightRect[][] = [];
+
+  for (const rect of sortedByTop) {
+    const rectHeight = rect.bottom - rect.top;
+    let matchedLine: HighlightRect[] | undefined;
+
+    for (const line of lines) {
+      const anchor = line[0];
+      const anchorHeight = anchor.bottom - anchor.top;
+      const verticalOverlap = Math.min(anchor.bottom, rect.bottom) - Math.max(anchor.top, rect.top);
+      const minHeight = Math.min(anchorHeight, rectHeight);
+      if (minHeight > 0 && verticalOverlap >= minHeight * 0.45) {
+        matchedLine = line;
+        break;
+      }
+    }
+
+    if (matchedLine) matchedLine.push(rect);
+    else lines.push([rect]);
+  }
+
+  const merged: HighlightRect[] = [];
+  for (const line of lines) {
+    line.sort((a, b) => a.left - b.left);
+    let current = { ...line[0] };
+
+    for (let i = 1; i < line.length; i++) {
+      const next = line[i];
+      const lineHeight = current.bottom - current.top;
+      const maxHorizontalGap = Math.max(lineHeight * 3.5, 0.06);
+
+      if (next.left <= current.right + maxHorizontalGap) {
+        current = {
+          left: Math.min(current.left, next.left),
+          top: Math.min(current.top, next.top),
+          right: Math.max(current.right, next.right),
+          bottom: Math.max(current.bottom, next.bottom),
+        };
+      } else {
+        merged.push(current);
+        current = { ...next };
+      }
+    }
+    merged.push(current);
+  }
+
+  return merged;
+}
 let databasePromise: Promise<SQLite.SQLiteDatabase> | undefined;
 
 async function database() {

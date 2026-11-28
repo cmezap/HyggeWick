@@ -64,3 +64,26 @@ En `src/components/responsive-app-tabs.tsx`, `/reader` está registrado como `<T
 - El script `scripts/patch-expo-pdf.js` copia `native/android/KJExpoPdfView.kt` al paquete instalado y se ejecuta en `postinstall`. Al modificar la vista nativa, ejecutar `node scripts/patch-expo-pdf.js` para actualizar la copia local antes de compilar.
 - `npx tsc --noEmit` se había ejecutado sin errores en la verificación original de la solución; no se afirma aquí que cubra los cambios posteriores de instrumentación.
 - La verificación original en dispositivo confirmó la apertura directa en página destino, saltos desde marcadores/frases/highlights, navegación con el botón de ir a página y reapertura desde la última página guardada. La instrumentación de diagnóstico documentada después de esa verificación no queda validada por esa prueba.
+
+---
+
+## 5. Corrección adicional: salto manual ("Ir a página") desde el footer en páginas intermedias
+
+### Síntoma
+Al escribir una página destino en el input del footer (por ejemplo `30`) con el teclado abierto y pulsar **Ir**, el lector terminaba en páginas intermedias variables entre intentos (como `23` o `15`) en lugar de llegar a la página `30`.
+
+### Causa raíz
+1. **Orden de props `targetPage` vs `withAnimation`:**
+   - En `native/android/KJExpoPdfModule.kt`, `Prop("targetPage")` estaba declarado antes que `Prop("withAnimation")`, y en `src/app/reader.tsx` la prop `targetPage={requestedPage}` precedía a `withAnimation={pageJumpAnimated}` en `<ReaderPdfView>`.
+   - Al ejecutar `jumpToPage()` → `navigateToPage(requested, false, false)` (cambiando `pageJumpAnimated` a `false` y `requestedPage` a `30` en el mismo render), Expo Modules invocaba `setTargetPage(30)` **antes** de `setWithAnimation(false)`, por lo que `pdfView.jumpTo(29, true)` corría con animación (`ValueAnimator`).
+2. **Interrupción por resize de `KeyboardAvoidingView`:**
+   - Al mismo tiempo, `jumpToPage()` ejecutaba `Keyboard.dismiss()`. Con el lector envuelto en `<KeyboardAvoidingView behavior="height">`, el cierre del teclado redimensionaba `PDFView` (`onSizeChanged`) mientras la animación aún iba en curso, deteniendo/recalculando el desplazamiento en la página intermedia alcanzada en ese instante.
+
+### Cambios aplicados
+- **`native/android/KJExpoPdfModule.kt`:** se reordenó `Prop("withAnimation")` **antes** de `Prop("targetPage")` para garantizar que `withAnimation` se aplique siempre antes de ejecutar `setTargetPage(...)`.
+- **`src/app/reader.tsx`:** en `<ReaderPdfView>`, se colocó `withAnimation={pageJumpAnimated}` antes de `targetPage={requestedPage}`.
+- **`scripts/patch-expo-pdf.js`:** ejecutado (`node scripts/patch-expo-pdf.js`) para sincronizar `KJExpoPdfModule.kt` y `KJExpoPdfView.kt` hacia `node_modules/@kishannareshpal/expo-pdf`.
+
+### Verificación
+- `node scripts/patch-expo-pdf.js` ejecutado correctamente.
+- `npx tsc --noEmit` ejecutado sin errores (código de salida `0`). No se ejecutó `eas build`.

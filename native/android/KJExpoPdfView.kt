@@ -2,9 +2,12 @@ package com.kishannareshpal.expopdf
 
 import android.content.Context
 import android.graphics.Color
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Paint
 import android.graphics.Rect
 import android.net.Uri
-import android.util.Log
+import android.view.View
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.views.ExpoView
 import com.github.barteksc.pdfviewer.PDFView
@@ -16,6 +19,7 @@ import java.io.FileNotFoundException
 import androidx.core.net.toUri
 import com.github.barteksc.pdfviewer.util.SnapEdge
 import com.kishannareshpal.expopdf.lib.FitMode
+import io.legere.pdfiumandroid.PdfDocument
 
 class KJExpoPdfView(context: Context, appContext: AppContext) : ExpoView(context, appContext) {
   companion object {
@@ -55,11 +59,14 @@ class KJExpoPdfView(context: Context, appContext: AppContext) : ExpoView(context
   private var fitMode: FitMode = DEFAULT_FIT_MODE
   private var autoScaleEnabled: Boolean = DEFAULT_AUTO_SCALE_ENABLED
   private var isPageColorInverted: Boolean = DEFAULT_PAGE_COLOR_INVERTED_ENABLED
+  private var colorMode: String = "day"
   private var initialPage: Int = 1
   private var targetPage: Int? = null
+  private var currentPageIndex: Int? = null
   private var withAnimation: Boolean = true
   private var loadedPageCount: Int = 0
   private var hasActiveLoad: Boolean = false
+  private val colorFilterPaint = Paint()
   private val selectionController by lazy {
     PdfTextSelectionController(
       context,
@@ -107,6 +114,7 @@ class KJExpoPdfView(context: Context, appContext: AppContext) : ExpoView(context
     }
     if (nextUri == this.uri && hasActiveLoad) return
     this.uri = nextUri
+    this.currentPageIndex = null
 
     this.reloadPdf()
   }
@@ -164,6 +172,54 @@ class KJExpoPdfView(context: Context, appContext: AppContext) : ExpoView(context
     this.reloadPdf()
   }
 
+  fun setColorMode(mode: String?) {
+    val next = mode ?: "day"
+    if (this.colorMode == next) return
+    this.colorMode = next
+    applyColorFilter()
+    val shouldInvert = next == "night" || next == "night_contrast"
+    if (this.isPageColorInverted != shouldInvert) {
+      this.isPageColorInverted = shouldInvert
+      this.reloadPdf()
+    }
+  }
+
+  fun setKeepScreenOnEnabled(enabled: Boolean?) {
+    val next = enabled ?: false
+    this.keepScreenOn = next
+    this.pdfView.keepScreenOn = next
+  }
+
+  private fun applyColorFilter() {
+    val matrix = when (colorMode) {
+      "grayscale" -> ColorMatrix().apply { setSaturation(0f) }
+      "sepia" -> ColorMatrix(floatArrayOf(
+        0.393f, 0.769f, 0.189f, 0f, 0f,
+        0.349f, 0.686f, 0.168f, 0f, 0f,
+        0.272f, 0.534f, 0.131f, 0f, -8f,
+        0f, 0f, 0f, 1f, 0f,
+      ))
+      "night_contrast" -> {
+        val contrast = 1.35f
+        val translate = (-0.5f * contrast + 0.5f) * 255f
+        ColorMatrix(floatArrayOf(
+          contrast, 0f, 0f, 0f, translate,
+          0f, contrast, 0f, 0f, translate,
+          0f, 0f, contrast, 0f, translate,
+          0f, 0f, 0f, 1f, 0f,
+        ))
+      }
+      else -> null
+    }
+    if (matrix == null) {
+      pdfView.setLayerType(View.LAYER_TYPE_NONE, null)
+    } else {
+      colorFilterPaint.colorFilter = ColorMatrixColorFilter(matrix)
+      pdfView.setLayerType(View.LAYER_TYPE_HARDWARE, colorFilterPaint)
+    }
+    pdfView.invalidate()
+  }
+
   fun setAutoScaleEnabled(enabled: Boolean?) {
     val next = enabled ?: DEFAULT_AUTO_SCALE_ENABLED
     if (this.autoScaleEnabled == next) return
@@ -173,7 +229,6 @@ class KJExpoPdfView(context: Context, appContext: AppContext) : ExpoView(context
 
   fun setInitialPage(page: Int?) {
     initialPage = (page ?: 1).coerceAtLeast(1)
-    Log.i("KJExpoPdf", "initialPage=$initialPage")
     if (loadedPageCount > 0 && targetPage == null) pdfView.jumpTo(initialPage.coerceAtMost(loadedPageCount) - 1, false)
   }
   fun setWithAnimation(enabled: Boolean?) { withAnimation = enabled ?: true }
@@ -198,9 +253,8 @@ class KJExpoPdfView(context: Context, appContext: AppContext) : ExpoView(context
     }
 
     val currentUri = this.uri ?: return
-    val pageToOpen = (targetPage ?: initialPage).coerceAtLeast(1)
+    val pageToOpen = (targetPage ?: currentPageIndex?.plus(1) ?: initialPage).coerceAtLeast(1)
     val defaultPageIndex = pageToOpen - 1
-    Log.i("KJExpoPdf", "reloadPdf pageToOpen=$pageToOpen defaultPage=$defaultPageIndex")
 
     val pdfBuilder = try {
       if (currentUri.scheme == "content") {
@@ -235,17 +289,18 @@ class KJExpoPdfView(context: Context, appContext: AppContext) : ExpoView(context
           this.reportError(ErrorCode.invalidDocument, "The PDF has no pages")
           return@onLoad
         }
-        Log.i("KJExpoPdf", "onLoad(pageCount=$pageCount)")
         loadedPageCount = pageCount
+        val tableOfContents = flattenTableOfContents(pdfView.tableOfContents, pageCount)
         if (pageCount > 0) this.uri?.let { selectionController.load(it, password) }
         this.onLoadComplete(
           mapOf(
-            "pageCount" to pageCount
+            "pageCount" to pageCount,
+            "tableOfContents" to tableOfContents
           )
         )
       }
       .onPageChange { pageIndex, pageCount ->
-        Log.i("KJExpoPdf", "onPageChanged(pageIndex=$pageIndex)")
+        currentPageIndex = pageIndex
         selectionController.clearForPageChange(pageIndex)
         this.onPageChanged(
           mapOf(
@@ -292,6 +347,25 @@ class KJExpoPdfView(context: Context, appContext: AppContext) : ExpoView(context
   override fun onAttachedToWindow() {
     super.onAttachedToWindow()
     if (this.uri != null && !hasActiveLoad) this.reloadPdf()
+  }
+
+  private fun flattenTableOfContents(
+    bookmarks: List<PdfDocument.Bookmark>,
+    pageCount: Int,
+    level: Int = 0,
+    output: MutableList<Map<String, Any>> = mutableListOf(),
+  ): List<Map<String, Any>> {
+    for (bookmark in bookmarks) {
+      val title = bookmark.title?.trim().orEmpty()
+      val page = (bookmark.pageIdx + 1L).coerceIn(1L, pageCount.toLong().coerceAtLeast(1L)).toInt()
+      if (title.isNotEmpty()) {
+        output.add(mapOf("title" to title, "page" to page, "level" to level))
+      }
+      if (bookmark.children.isNotEmpty()) {
+        flattenTableOfContents(bookmark.children, pageCount, level + 1, output)
+      }
+    }
+    return output
   }
 
   private fun reportError(error: ErrorCode, message: String) {

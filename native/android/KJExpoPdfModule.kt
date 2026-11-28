@@ -60,13 +60,21 @@ class KJExpoPdfModule : Module() {
         view.setPageColorInverted(enabled)
       }
 
+      Prop("colorMode") { view: KJExpoPdfView, mode: String? ->
+        view.setColorMode(mode)
+      }
+
+      Prop("keepScreenOn") { view: KJExpoPdfView, enabled: Boolean? ->
+        view.setKeepScreenOnEnabled(enabled)
+      }
+
       Prop("autoScale") { view: KJExpoPdfView, enabled: Boolean? ->
          view.setAutoScaleEnabled(enabled)
       }
 
       Prop("initialPage") { view: KJExpoPdfView, page: Int? -> view.setInitialPage(page) }
-      Prop("targetPage") { view: KJExpoPdfView, page: Int? -> view.setTargetPage(page) }
       Prop("withAnimation") { view: KJExpoPdfView, enabled: Boolean? -> view.setWithAnimation(enabled) }
+      Prop("targetPage") { view: KJExpoPdfView, page: Int? -> view.setTargetPage(page) }
       Prop("highlightsJson") { view: KJExpoPdfView, json: String? -> view.setHighlightsJson(json) }
       Prop("selectionClearToken") { view: KJExpoPdfView, token: Int? -> view.setSelectionClearToken(token) }
       Prop("selectionCopyRequest") { view: KJExpoPdfView, request: String? -> view.setSelectionCopyRequest(request) }

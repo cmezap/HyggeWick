@@ -369,24 +369,24 @@ const styles = StyleSheet.create({
 
   /* Copy común */
   eyebrowRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two, marginBottom: Spacing.one },
-  eyebrow: { fontSize: 11, letterSpacing: 1.1, fontWeight: '600' },
+  eyebrow: { fontSize: 10, letterSpacing: 0.9, fontWeight: '600' },
   eyebrowLine: { flex: 1, height: 1, opacity: 0.4 },
 
   greeting: {
-    fontSize: 28,
-    lineHeight: 34,
+    fontSize: 22,
+    lineHeight: 28,
     fontFamily: Typography.literary.fontFamily,
     color: '#E8DCFF',
     fontWeight: '600',
   },
   greetingLandscape: {
-    fontSize: 32,
-    lineHeight: 38,
+    fontSize: 25,
+    lineHeight: 31,
     fontFamily: Typography.literary.fontFamily,
     color: '#E8DCFF',
     fontWeight: '600',
   },
-  subtitle: { fontSize: 15, lineHeight: 22, marginTop: 2 },
+  subtitle: { fontSize: 13, lineHeight: 19, marginTop: 2 },
 
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two, marginTop: Spacing.two },
   actionsLandscape: { flexDirection: 'row', gap: Spacing.two, marginTop: Spacing.two },
@@ -394,13 +394,13 @@ const styles = StyleSheet.create({
   actionGhost: { minWidth: 130, borderRadius: Radii.pill, borderWidth: 1, borderColor: '#4A3870' },
 
   /* Secciones */
-  sections: { paddingHorizontal: Layout.phoneHorizontalMargin, gap: Spacing.four, marginTop: Spacing.three },
+  sections: { paddingHorizontal: Layout.phoneHorizontalMargin, gap: Spacing.three, marginTop: Spacing.three },
   sectionsWide: { paddingHorizontal: 0, marginTop: Spacing.two },
   section: { gap: Spacing.two },
 
   sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one },
-  sectionTitle: { fontSize: 22, lineHeight: 28, fontFamily: Typography.literary.fontFamily, fontWeight: '600' },
-  sectionDot: { fontSize: 16 },
+  sectionTitle: { fontSize: 17, lineHeight: 22, fontFamily: Typography.literary.fontFamily, fontWeight: '600' },
+  sectionDot: { fontSize: 13 },
   sectionLine: { flex: 1, height: 1, opacity: 0.4, marginHorizontal: Spacing.one },
 
   /* Tarjeta de lectura */
@@ -413,10 +413,10 @@ const styles = StyleSheet.create({
     borderRadius: Radii.large,
     borderWidth: Borders.subtle,
   },
-  readingCover: { width: 72, minWidth: 72, aspectRatio: COVER_RATIO, flexShrink: 0 },
+  readingCover: { width: 64, minWidth: 64, aspectRatio: COVER_RATIO, flexShrink: 0 },
   readingInfo: { flex: 1, minWidth: 0, gap: 4 },
-  readingTitle: { fontSize: 17, lineHeight: 22, fontFamily: Typography.literary.fontFamily, fontWeight: '600' },
-  readingPct: { fontSize: 13, lineHeight: 18 },
+  readingTitle: { fontSize: 15, lineHeight: 20, fontFamily: Typography.literary.fontFamily, fontWeight: '600' },
+  readingPct: { fontSize: 12, lineHeight: 16 },
   progressTrack: { height: 4, borderRadius: Radii.pill, overflow: 'hidden', marginTop: 2 },
   progressFill: { height: '100%', borderRadius: Radii.pill },
   readingArrow: {
@@ -469,6 +469,6 @@ const styles = StyleSheet.create({
   addIcon: { fontSize: 22, lineHeight: 26 },
   addLabel: { fontSize: 11, lineHeight: 14, textAlign: 'center' },
   shelfEmptyCard: { marginTop: Spacing.one, padding: Spacing.three, gap: Spacing.two, alignItems: 'flex-start' },
-  shelfBookTitle: { marginTop: Spacing.one, fontSize: 13, lineHeight: 17, fontFamily: Typography.literary.fontFamily },
+  shelfBookTitle: { marginTop: Spacing.one, fontSize: 12, lineHeight: 16, fontFamily: Typography.literary.fontFamily },
 
 });

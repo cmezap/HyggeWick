@@ -39,6 +39,8 @@ export default function LibraryScreen() {
   const { width } = useWindowDimensions();
   const compactHeader = width < 520;
   const columns = width >= 1150 ? 6 : width >= 850 ? 5 : width >= 600 ? 4 : 3;
+  const gridWidth = Math.min(width, Layout.contentMaxWidth) - Layout.phoneHorizontalMargin * 2;
+  const cellWidth = Math.floor(gridWidth / columns);
   const [books, setBooks] = useState<Book[]>([]);
   const [loading, setLoading] = useState(true);
   const [importing, setImporting] = useState(false);
@@ -148,15 +150,15 @@ export default function LibraryScreen() {
     ]);
   };
 
-  const renderBook = ({ item, index }: { item: Book; index: number }) => (
-    <View style={styles.bookCell}>
+  const renderBook = ({ item }: { item: Book }) => (
+    <View style={[styles.bookCell, { width: cellWidth }]}>
       <Pressable accessibilityRole="button" accessibilityLabel={`Abrir ${item.title}`} onPress={() => openBook(item)} style={({ pressed }) => [styles.bookPressable, pressed && styles.pressed]}>
         <BookCover book={item} favorite={item.isFavorite} />
         <ThemedText numberOfLines={1} ellipsizeMode="tail" style={styles.bookTitle}>{item.title}</ThemedText>
         <View style={styles.authorSlot}>
-          {item.author ? <ThemedText type="small" themeColor="textMuted" numberOfLines={1} ellipsizeMode="tail">{item.author}</ThemedText> : null}
+          {item.author ? <ThemedText style={styles.bookMeta} themeColor="textMuted" numberOfLines={1} ellipsizeMode="tail">{item.author}</ThemedText> : null}
         </View>
-        <ThemedText type="small" numberOfLines={1} ellipsizeMode="tail" themeColor={item.status === 'missing' ? 'error' : 'textMuted'}>
+        <ThemedText style={styles.bookMeta} numberOfLines={1} ellipsizeMode="tail" themeColor={item.status === 'missing' ? 'error' : 'textMuted'}>
           {item.status === 'missing' ? 'Archivo no encontrado' : `${formatFileSize(item.fileSize)} · ${item.readingState === 'finished' ? 'Terminado' : item.readingState === 'reading' ? `${Math.round(item.readingProgress * 100)}% · Leyendo` : 'Pendiente'}`}
         </ThemedText>
         <View style={[styles.progressTrack, { backgroundColor: theme.progressTrack }]}>
@@ -178,9 +180,9 @@ export default function LibraryScreen() {
     <View style={styles.headerContent}>
       <View style={[styles.header, compactHeader && styles.compactHeader]}>
         <View style={styles.headingCopy}>
-          <ThemedText type="title">Biblioteca</ThemedText>
-          <ThemedText themeColor="textSecondary">Historias reunidas bajo una misma luz.</ThemedText>
-          <ThemedText type="small" themeColor="textMuted">{books.length} {books.length === 1 ? 'libro' : 'libros'} guardados</ThemedText>
+          <ThemedText style={styles.libraryTitle}>Biblioteca</ThemedText>
+          <ThemedText style={styles.librarySubtitle} themeColor="textSecondary">Historias reunidas bajo una misma luz.</ThemedText>
+          <ThemedText style={styles.libraryCount} themeColor="textMuted">{books.length} {books.length === 1 ? 'libro' : 'libros'} guardados</ThemedText>
         </View>
         <Button title="Importar PDF" loading={importing} style={compactHeader && styles.compactImportButton} onPress={() => void handleImport()}
           icon={<SymbolView name={{ ios: 'plus', android: 'add', web: 'add' }} size={18} tintColor={theme.textOnAccent} />} />
@@ -259,7 +261,7 @@ export default function LibraryScreen() {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1 }, listContent: { flexGrow: 1, paddingHorizontal: Layout.phoneHorizontalMargin, paddingVertical: Spacing.three },
+  listContent: { flexGrow: 1, paddingHorizontal: Layout.phoneHorizontalMargin, paddingVertical: Spacing.three, maxWidth: Layout.contentMaxWidth, alignSelf: 'center' },
   undoDock: { position: 'absolute', left: Layout.phoneHorizontalMargin, right: Layout.phoneHorizontalMargin, bottom: Spacing.three, alignItems: 'center' },
   undoCard: { width: '100%', maxWidth: Layout.contentMaxWidth, minHeight: 76, padding: Spacing.three, borderRadius: Radii.large, flexDirection: 'row', alignItems: 'center', gap: Spacing.three },
   undoCopy: { flex: 1, minWidth: 0, gap: Spacing.one }, undoTitle: { fontWeight: '600' },
@@ -267,18 +269,22 @@ const styles = StyleSheet.create({
   undoProgress: { height: '100%', borderRadius: 2 },
   undoButton: { minHeight: 42, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.one, paddingHorizontal: Spacing.three, borderRadius: Radii.medium },
   undoButtonText: { fontWeight: '600' },
-  headerContent: { width: '100%', maxWidth: Layout.contentMaxWidth, alignSelf: 'center', gap: Spacing.three, marginBottom: Spacing.three },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.three },
+  headerContent: { width: '100%', maxWidth: Layout.contentMaxWidth, alignSelf: 'center', gap: Spacing.two, marginBottom: Spacing.three, paddingHorizontal: Layout.phoneHorizontalMargin },
+  
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.two },
   compactHeader: { flexDirection: 'column', alignItems: 'stretch', gap: Spacing.two },
   compactImportButton: { alignSelf: 'flex-start' },
-  headingCopy: { flex: 1, minWidth: 0, gap: Spacing.one }, message: { gap: Spacing.two, borderWidth: Borders.subtle },
-  searchWrap: { minHeight: 50, borderRadius: Radii.medium, flexDirection: 'row', alignItems: 'center', gap: Spacing.two, paddingLeft: Spacing.three },
-  searchInput: { ...Typography.body, flex: 1, minWidth: 0, paddingVertical: Spacing.two },
+  headingCopy: { flex: 1, minWidth: 0, gap: 2 }, message: { gap: Spacing.two, borderWidth: Borders.subtle },
+  libraryTitle: { fontSize: 22, lineHeight: 28, fontWeight: '700', fontFamily: Typography.literary.fontFamily },
+  librarySubtitle: { fontSize: 13, lineHeight: 18 },
+  libraryCount: { fontSize: 11, lineHeight: 15 },
+  searchWrap: { minHeight: 44, borderRadius: Radii.medium, flexDirection: 'row', alignItems: 'center', gap: Spacing.two, paddingLeft: Spacing.three },
+  searchInput: { ...Typography.body, fontSize: 14, flex: 1, minWidth: 0, paddingVertical: Spacing.one },
   controlRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.two },
-  pills: { flexDirection: 'row', gap: Spacing.one }, pill: { minHeight: 40, paddingHorizontal: Spacing.three, borderRadius: Radii.pill, justifyContent: 'center' },
-  sortWrap: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one }, sortControl: { minHeight: 40, flexDirection: 'row', alignItems: 'center', gap: Spacing.one, borderWidth: Borders.subtle, borderRadius: Radii.medium, paddingHorizontal: Spacing.two },
-  bookCell: { flex: 1, minWidth: 0, paddingHorizontal: 3, paddingBottom: Spacing.two, maxWidth: 190 }, bookPressable: { gap: 2 }, pressed: { opacity: 0.78 },
-  bookTitle: { fontSize: 13, lineHeight: 17, fontWeight: '600', marginTop: 2, height: 17, minWidth: 0 }, authorSlot: { height: 15, justifyContent: 'center' }, progressTrack: { height: 3, borderRadius: 2, overflow: 'hidden', marginTop: 2 }, progress: { height: '100%' },
+  pills: { flexDirection: 'row', gap: Spacing.one }, pill: { minHeight: 36, paddingHorizontal: Spacing.three, borderRadius: Radii.pill, justifyContent: 'center' },
+  sortWrap: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one }, sortControl: { minHeight: 36, flexDirection: 'row', alignItems: 'center', gap: Spacing.one, borderWidth: Borders.subtle, borderRadius: Radii.medium, paddingHorizontal: Spacing.two },
+  bookCell: { minWidth: 0, paddingHorizontal: Spacing.two, paddingBottom: Spacing.two }, bookPressable: { gap: 2 }, pressed: { opacity: 0.78 },
+  bookTitle: { fontSize: 12, lineHeight: 15, fontWeight: '600', marginTop: 3, height: 15, minWidth: 0 }, bookMeta: { fontSize: 11, lineHeight: 14 }, authorSlot: { height: 14, justifyContent: 'center' }, progressTrack: { height: 3, borderRadius: 2, overflow: 'hidden', marginTop: 2 }, progress: { height: '100%' },
   bookActions: { flexDirection: 'row', justifyContent: 'flex-start', gap: 2 }, compactIcon: { width: 38, height: 38 },
   emptyState: { minHeight: 290, maxWidth: 620, width: '100%', alignSelf: 'center', justifyContent: 'center', alignItems: 'center', padding: Spacing.five, gap: Spacing.three },
   emptyIcon: { width: 64, height: 64, borderWidth: Borders.subtle, borderRadius: Radii.pill, alignItems: 'center', justifyContent: 'center' }, emptyTitle: { textAlign: 'center' }, emptyCopy: { textAlign: 'center', maxWidth: 420 },
