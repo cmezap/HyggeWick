@@ -9,7 +9,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Button, ProgressBar, Surface } from '@/components/ui';
 import { useTheme } from '@/hooks/use-theme';
 import { getLibraryBooks } from '@/features/library/document-storage';
-import { summarizeReadingProgress, type Book } from '@/features/library/book-repository';
+import { formatReadingTime, summarizeReadingProgress, type Book } from '@/features/library/book-repository';
 import { openBook as openLibraryBook } from '@/features/library/open-book';
 import { Layout, Radii, Spacing } from '@/theme';
 
@@ -99,6 +99,7 @@ export default function ActivityScreen() {
                 {overview.knownTotalPages > 0
                   ? `${formatNumber(overview.pagesRead)} de ${formatNumber(overview.knownTotalPages)} páginas`
                   : 'Aún no hay totales de páginas disponibles'}
+                {overview.totalReadingTimeSeconds > 0 ? `  ·  ${formatReadingTime(overview.totalReadingTimeSeconds)} leídos` : ''}
               </ThemedText>
               {overview.booksWithoutPageCount > 0 ? <ThemedText type="small" themeColor="textMuted">
                 {overview.booksWithoutPageCount} {overview.booksWithoutPageCount === 1 ? 'libro sin total' : 'libros sin total'}
@@ -181,6 +182,7 @@ function ProgressBookCard({ book, onDetails, onContinue }: { book: Book; onDetai
       </Pressable>
       <ThemedText type="small" themeColor="textSecondary">
         {book.totalPages ? `Página ${book.currentPage} de ${book.totalPages}` : `Página ${book.currentPage} · total por conocer`}
+        {book.readingTimeSeconds > 0 ? `  ·  ${formatReadingTime(book.readingTimeSeconds, true)}` : ''}
       </ThemedText>
       <View style={styles.bookProgressLine}>
         <ProgressBar value={percent} accessibilityLabel={`Progreso de ${book.title}`} />

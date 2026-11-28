@@ -23,6 +23,8 @@ export type ReadingActivitySummary = {
   bestStreakDate: string | null;
 };
 
+export type BookReadingDay = { date: string; pages: number[] };
+
 async function database() {
   if (!databasePromise) {
     databasePromise = (async () => {
@@ -110,6 +112,8 @@ export async function storeProfileAvatar(sourceUri: string, fileName: string) {
 export function recordReadingActivity(bookId: string, pages: readonly number[]): Promise<void> {
   const operation = readingActivityQueue.then(async () => {
     const day = localDateKey();
+    // A page is counted once per book and local calendar day, even if the reader
+    // revisits it or this write is retried.
     const validPages = [...new Set(pages.filter((page) => Number.isInteger(page) && page >= 1))];
     if (validPages.length === 0) return;
     const db = await database();
@@ -150,6 +154,22 @@ export async function getReadingActivitySummary(): Promise<ReadingActivitySummar
     bestStreak: profile.bestStreak,
     bestStreakDate: profile.bestStreakDate,
   };
+}
+
+/** Returns only pages genuinely visited for this book, grouped by local activity date. */
+export async function getBookReadingActivity(bookId: string): Promise<BookReadingDay[]> {
+  const db = await database();
+  const rows = await db.getAllAsync<{ activity_date: string; page: number }>(
+    `SELECT activity_date, page FROM reading_page_visits
+     WHERE book_id = ? ORDER BY activity_date DESC, page ASC`, bookId,
+  );
+  const days = new Map<string, number[]>();
+  for (const row of rows) {
+    const pages = days.get(row.activity_date) ?? [];
+    pages.push(Number(row.page));
+    days.set(row.activity_date, pages);
+  }
+  return [...days].map(([date, pages]) => ({ date, pages }));
 }
 
 export function todayLocalDate() { return localDateKey(); }

@@ -25,6 +25,8 @@ export type Book = {
   volumeNumber: string | null;
   language: string | null;
   coverPath: string | null;
+  hideCoverDetails?: boolean;
+  readingTimeSeconds: number;
   updatedAt: string;
 };
 
@@ -37,7 +39,21 @@ export type ReadingOverview = {
   knownTotalPages: number;
   booksWithoutPageCount: number;
   globalProgress: number | null;
+  totalReadingTimeSeconds: number;
 };
+
+/** Formats accumulated reading seconds into a concise, human-friendly label. */
+export function formatReadingTime(totalSeconds: number, compact = false): string {
+  const safe = Math.max(0, Math.floor(totalSeconds));
+  if (safe === 0) return compact ? '0 min' : 'Sin tiempo registrado';
+  if (safe < 60) return compact ? `${safe} s` : `${safe} s`;
+  const totalMinutes = Math.floor(safe / 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours === 0) return `${totalMinutes} min`;
+  if (minutes === 0) return `${hours} h`;
+  return `${hours} h ${minutes} min`;
+}
 
 /** Summarizes persisted page progress; unknown page totals are excluded from the global ratio. */
 export function summarizeReadingProgress(books: readonly Book[]): ReadingOverview {
@@ -46,6 +62,7 @@ export function summarizeReadingProgress(books: readonly Book[]): ReadingOvervie
   const pagesRead = Math.round(pageCountKnownBooks.reduce(
     (sum, book) => sum + book.readingProgress * book.totalPages!, 0,
   ));
+  const totalReadingTimeSeconds = books.reduce((sum, book) => sum + (book.readingTimeSeconds ?? 0), 0);
 
   return {
     totalBooks: books.length,
@@ -56,6 +73,7 @@ export function summarizeReadingProgress(books: readonly Book[]): ReadingOvervie
     knownTotalPages,
     booksWithoutPageCount: books.length - pageCountKnownBooks.length,
     globalProgress: knownTotalPages > 0 ? pagesRead / knownTotalPages : null,
+    totalReadingTimeSeconds,
   };
 }
 
@@ -118,6 +136,12 @@ async function database() {
       for (const name of ['description', 'genre', 'series', 'volume_number', 'language']) {
         if (!existingColumns.has(name)) await db.execAsync(`ALTER TABLE books ADD COLUMN ${name} TEXT`);
       }
+      if (!existingColumns.has('hide_cover_details')) {
+        await db.execAsync('ALTER TABLE books ADD COLUMN hide_cover_details INTEGER NOT NULL DEFAULT 0');
+      }
+      if (!existingColumns.has('reading_time_seconds')) {
+        await db.execAsync('ALTER TABLE books ADD COLUMN reading_time_seconds INTEGER NOT NULL DEFAULT 0');
+      }
       await db.execAsync('CREATE UNIQUE INDEX IF NOT EXISTS books_content_hash_idx ON books(content_hash) WHERE content_hash IS NOT NULL');
       return db;
     })().catch((error) => {
@@ -141,7 +165,10 @@ function fromRow(row: Record<string, unknown>): Book {
     description: row.description == null ? null : String(row.description), genre: row.genre == null ? null : String(row.genre),
     series: row.series == null ? null : String(row.series), volumeNumber: row.volume_number == null ? null : String(row.volume_number),
     language: row.language == null ? null : String(row.language),
-    coverPath: row.cover_path == null ? null : String(row.cover_path), updatedAt: String(row.updated_at),
+    coverPath: row.cover_path == null ? null : String(row.cover_path),
+    hideCoverDetails: Number(row.hide_cover_details) === 1,
+    readingTimeSeconds: row.reading_time_seconds == null ? 0 : Math.max(0, Number(row.reading_time_seconds)),
+    updatedAt: String(row.updated_at),
   };
 }
 
@@ -171,7 +198,7 @@ export async function insertBook(input: NewBook): Promise<Book> {
   const now = new Date().toISOString();
   const book: Book = {
     lastOpenedAt: null, currentPage: 1, totalPages: null, readingProgress: 0, readingState: 'pending', isFavorite: false,
-    status: 'available', author: null, description: null, genre: null, series: null, volumeNumber: null, language: null, coverPath: null, contentHash: null, ...input, fileType: 'pdf', updatedAt: input.updatedAt ?? now,
+    status: 'available', author: null, description: null, genre: null, series: null, volumeNumber: null, language: null, coverPath: null, contentHash: null, readingTimeSeconds: 0, ...input, fileType: 'pdf', updatedAt: input.updatedAt ?? now,
   };
   const db = await database();
   await db.runAsync(INSERT_SQL, ...values(book));
@@ -197,13 +224,13 @@ export async function updateBookContentHash(id: string, hash: string): Promise<v
   await db.runAsync('UPDATE books SET content_hash = ?, updated_at = ? WHERE id = ? AND content_hash IS NULL', hash, new Date().toISOString(), id);
 }
 
-export async function updateBookMetadata(id: string, changes: Partial<Pick<Book, 'title' | 'author' | 'description' | 'genre' | 'series' | 'volumeNumber' | 'language' | 'coverPath' | 'isFavorite' | 'status'>>): Promise<Book | null> {
+export async function updateBookMetadata(id: string, changes: Partial<Pick<Book, 'title' | 'author' | 'description' | 'genre' | 'series' | 'volumeNumber' | 'language' | 'coverPath' | 'hideCoverDetails' | 'isFavorite' | 'status'>>): Promise<Book | null> {
   const current = await getBookById(id);
   if (!current) return null;
   const next = { ...current, ...changes, updatedAt: new Date().toISOString() };
   const db = await database();
-  await db.runAsync('UPDATE books SET title=?, author=?, description=?, genre=?, series=?, volume_number=?, language=?, cover_path=?, is_favorite=?, status=?, updated_at=? WHERE id=?',
-    next.title, next.author, next.description, next.genre, next.series, next.volumeNumber, next.language, next.coverPath, next.isFavorite ? 1 : 0, next.status, next.updatedAt, id);
+  await db.runAsync('UPDATE books SET title=?, author=?, description=?, genre=?, series=?, volume_number=?, language=?, cover_path=?, hide_cover_details=?, is_favorite=?, status=?, updated_at=? WHERE id=?',
+    next.title, next.author, next.description, next.genre, next.series, next.volumeNumber, next.language, next.coverPath, next.hideCoverDetails ? 1 : 0, next.isFavorite ? 1 : 0, next.status, next.updatedAt, id);
   return next;
 }
 
@@ -235,6 +262,17 @@ export async function updateLastOpenedAt(id: string, date = new Date().toISOStri
   await db.runAsync('UPDATE books SET last_opened_at=?, updated_at=? WHERE id=?', date, date, id);
 }
 
+/** Adds elapsed active reading seconds to a book's persisted total. */
+export async function addBookReadingTime(id: string, seconds: number): Promise<void> {
+  const delta = Math.floor(seconds);
+  if (delta <= 0) return;
+  const db = await database();
+  await db.runAsync(
+    'UPDATE books SET reading_time_seconds = COALESCE(reading_time_seconds, 0) + ?, updated_at = ? WHERE id = ?',
+    delta, new Date().toISOString(), id,
+  );
+}
+
 export async function migrateLegacyCatalog(
   readLegacy: () => Promise<{ documents: LegacyDocument[]; corrupted: boolean }>,
   resolveFilePath: (document: LegacyDocument) => string | null,
@@ -255,7 +293,7 @@ export async function migrateLegacyCatalog(
         id: legacy.id, title: legacy.originalName, originalFileName: legacy.originalName,
         filePath, fileSize: legacy.sizeBytes, contentHash: null, fileType: 'pdf', dateAdded: legacy.importedAt,
         lastOpenedAt: null, currentPage: 1, totalPages: null, readingProgress: 0, readingState: 'pending',
-        isFavorite: false, status: 'available', author: null, description: null, genre: null, series: null, volumeNumber: null, language: null, coverPath: null, updatedAt: legacy.importedAt,
+        isFavorite: false, status: 'available', author: null, description: null, genre: null, series: null, volumeNumber: null, language: null, coverPath: null, readingTimeSeconds: 0, updatedAt: legacy.importedAt,
       };
       await db.runAsync(INSERT_SQL, ...values(book));
     }

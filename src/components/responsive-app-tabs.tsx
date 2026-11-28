@@ -154,14 +154,14 @@ function ResponsiveTabList({
       )}
 
       {wide ? (
-        <View style={styles.sidebarBottom}>
-          <Pressable style={styles.settingsRow}>
+        <View style={[styles.sidebarBottom, { borderTopColor: theme.divider }]}>
+          <Pressable style={[styles.settingsRow, { borderRadius: Radii.large }]}>
             <SymbolView
               name={{ ios: 'gearshape.fill', android: 'settings', web: 'settings' }}
               size={20}
-              tintColor={theme.textSecondary}
+              tintColor={theme.textMuted}
             />
-            <ThemedText type="small" style={{ color: theme.textSecondary }}>
+            <ThemedText type="small" style={{ color: theme.textMuted }}>
               Ajustes
             </ThemedText>
           </Pressable>
@@ -185,37 +185,40 @@ const styles = StyleSheet.create({
     borderTopWidth: Borders.subtle,
   },
   sidebar: {
-    width: 190,
+    width: 196,
     height: '100%',
     flexDirection: 'column',
     justifyContent: 'space-between',
-    paddingHorizontal: Spacing.three,
+    paddingHorizontal: Spacing.two,
     paddingTop: Spacing.four,
     paddingBottom: Spacing.four,
     borderRightWidth: Borders.subtle,
   },
   sidebarTop: {
     flex: 1,
-    gap: Spacing.three,
+    gap: Spacing.one,
   },
   sidebarBottom: {
     paddingTop: Spacing.two,
+    borderTopWidth: Borders.subtle,
   },
   brandRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.one,
-    paddingHorizontal: Spacing.two,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
     marginBottom: Spacing.two,
   },
   brandStar: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '700',
   },
   brand: {
-    fontSize: 18,
-    lineHeight: 24,
+    fontSize: 17,
+    lineHeight: 22,
     fontWeight: '700',
+    letterSpacing: 0.1,
   },
   settingsRow: {
     flexDirection: 'row',
@@ -226,7 +229,7 @@ const styles = StyleSheet.create({
     borderRadius: Radii.medium,
   },
   destinations: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.one },
-  wideDestinations: { flexDirection: 'column', alignItems: 'stretch', gap: Spacing.two },
+  wideDestinations: { flexDirection: 'column', alignItems: 'stretch', gap: 2 },
   tabButton: {
     minHeight: Layout.standardTouchTarget,
     justifyContent: 'center',
@@ -247,7 +250,8 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-start',
     gap: Spacing.two,
     paddingHorizontal: Spacing.three,
-    borderRadius: Radii.pill,
+    borderRadius: Radii.large,
+    minHeight: 46,
   },
   activeIndicator: {
     position: 'absolute',

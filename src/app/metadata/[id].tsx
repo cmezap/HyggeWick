@@ -2,7 +2,8 @@ import * as DocumentPicker from 'expo-document-picker';
 import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from 'react-native';
+import { SymbolView } from 'expo-symbols';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -12,8 +13,8 @@ import { getBookById, updateBookMetadata, type Book } from '@/features/library/b
 import { storeBookCover } from '@/features/library/document-storage';
 import { Borders, Layout, Radii, Spacing, Typography } from '@/theme';
 
-type Form = { title: string; author: string; description: string; genre: string; series: string; volumeNumber: string; language: string; coverPath: string | null };
-const EMPTY_FORM: Form = { title: '', author: '', description: '', genre: '', series: '', volumeNumber: '', language: '', coverPath: null };
+type Form = { title: string; author: string; description: string; genre: string; series: string; volumeNumber: string; language: string; coverPath: string | null; hideCoverDetails: boolean };
+const EMPTY_FORM: Form = { title: '', author: '', description: '', genre: '', series: '', volumeNumber: '', language: '', coverPath: null, hideCoverDetails: false };
 const optional = (value: string) => value.trim() || null;
 
 export default function MetadataEditorScreen() {
@@ -42,7 +43,7 @@ export default function MetadataEditorScreen() {
       if (!active) return;
       if (!result) { setError('No se encontró este libro en la biblioteca.'); return; }
       setBook(result);
-      const value: Form = { title: result.title, author: result.author ?? '', description: result.description ?? '', genre: result.genre ?? '', series: result.series ?? '', volumeNumber: result.volumeNumber ?? '', language: result.language ?? '', coverPath: result.coverPath };
+      const value: Form = { title: result.title, author: result.author ?? '', description: result.description ?? '', genre: result.genre ?? '', series: result.series ?? '', volumeNumber: result.volumeNumber ?? '', language: result.language ?? '', coverPath: result.coverPath, hideCoverDetails: Boolean(result.hideCoverDetails) };
       setForm(value); setInitial(value);
     }).catch(() => setError('No se pudieron cargar los metadatos del libro.')).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
@@ -58,7 +59,7 @@ export default function MetadataEditorScreen() {
     ]);
   }), [dirty, form, guardedNavigation]);
 
-  const setField = (field: keyof Form, value: string | null) => setForm((current) => ({ ...current, [field]: value }));
+  const setField = <K extends keyof Form>(field: K, value: Form[K]) => setForm((current) => ({ ...current, [field]: value }));
 
   const chooseCover = async () => {
     setError(null); setPicking(true);
@@ -79,7 +80,17 @@ export default function MetadataEditorScreen() {
     if (!title) { setError('El título es obligatorio.'); return; }
     setError(null); setSaving(true);
     try {
-      const updated = await updateBookMetadata(id, { title, author: optional(form.author), description: optional(form.description), genre: optional(form.genre), series: optional(form.series), volumeNumber: optional(form.volumeNumber), language: optional(form.language), coverPath: form.coverPath });
+      const updated = await updateBookMetadata(id, {
+        title,
+        author: optional(form.author),
+        description: optional(form.description),
+        genre: optional(form.genre),
+        series: optional(form.series),
+        volumeNumber: optional(form.volumeNumber),
+        language: optional(form.language),
+        coverPath: form.coverPath,
+        hideCoverDetails: form.coverPath ? form.hideCoverDetails : false,
+      });
       if (!updated) { setError('No se encontró este libro en la biblioteca.'); return; }
       const savedForm = { ...form, title };
       setForm(savedForm); setInitial(savedForm);
@@ -114,7 +125,33 @@ export default function MetadataEditorScreen() {
                   {form.coverPath ? <Image source={{ uri: form.coverPath }} style={StyleSheet.absoluteFill} contentFit="cover" /> : <ThemedText themeColor="textMuted">Sin portada personalizada</ThemedText>}
                 </View>
                 <Button title={picking ? 'Seleccionando…' : 'Elegir portada'} variant="secondary" loading={picking} onPress={() => void chooseCover()} />
-                {form.coverPath ? <Button title="Quitar portada" variant="ghost" onPress={() => setField('coverPath', null)} /> : null}
+                {form.coverPath ? (
+                  <>
+                    <Pressable
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: form.hideCoverDetails }}
+                      accessibilityLabel="Ocultar título y detalles sobre la portada"
+                      onPress={() => setField('hideCoverDetails', !form.hideCoverDetails)}
+                      style={[
+                        styles.checkboxRow,
+                        { borderColor: form.hideCoverDetails ? theme.borderEmphasized : theme.border, backgroundColor: theme.surfaceSelected },
+                      ]}
+                    >
+                      <View style={[styles.checkboxBox, { borderColor: form.hideCoverDetails ? theme.accent : theme.textMuted, backgroundColor: form.hideCoverDetails ? theme.accent : 'transparent' }]}>
+                        {form.hideCoverDetails ? (
+                          <SymbolView name={{ ios: 'checkmark', android: 'check', web: 'check' }} size={12} tintColor={theme.textOnAccent} />
+                        ) : null}
+                      </View>
+                      <View style={styles.checkboxCopy}>
+                        <ThemedText type="smallBold" style={{ color: theme.text }}>Dejar imagen limpia</ThemedText>
+                        <ThemedText type="small" themeColor="textSecondary" style={{ fontSize: 10, lineHeight: 13 }}>
+                          Oculta título, autor y ornamentos sobre la portada
+                        </ThemedText>
+                      </View>
+                    </Pressable>
+                    <Button title="Quitar portada" variant="ghost" onPress={() => { setField('coverPath', null); setField('hideCoverDetails', false); }} />
+                  </>
+                ) : null}
               </View>
               <View style={styles.fields}>
                 {field('Título', 'title', { required: true })}
@@ -139,6 +176,23 @@ const styles = StyleSheet.create({
   heading: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three }, headingCopy: { flex: 1, gap: Spacing.one },
   formCard: { gap: Spacing.four }, formGrid: { gap: Spacing.four }, wideGrid: { flexDirection: 'row', alignItems: 'flex-start' },
   coverColumn: { gap: Spacing.two, alignItems: 'stretch' }, coverPreview: { width: 150, aspectRatio: 2 / 3, borderWidth: Borders.subtle, borderRadius: Radii.medium, overflow: 'hidden', alignItems: 'center', justifyContent: 'center', padding: Spacing.two },
+  checkboxRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    padding: Spacing.two,
+    borderRadius: Radii.medium,
+    borderWidth: Borders.subtle,
+  },
+  checkboxBox: {
+    width: 20,
+    height: 20,
+    borderRadius: Radii.small,
+    borderWidth: Borders.subtle,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkboxCopy: { flex: 1, gap: 1 },
   fields: { flex: 1, minWidth: 0, gap: Spacing.three }, field: { flex: 1, minWidth: 0, gap: Spacing.one }, twoFields: { flexDirection: 'row', gap: Spacing.three },
   input: { minHeight: 48, borderWidth: Borders.subtle, borderRadius: Radii.medium, paddingHorizontal: Spacing.three, ...Typography.body }, multiline: { minHeight: 120, paddingTop: Spacing.two },
   actions: { flexDirection: 'row', justifyContent: 'flex-end', flexWrap: 'wrap', gap: Spacing.two }, loading: { minHeight: 200, justifyContent: 'center', alignItems: 'center' },

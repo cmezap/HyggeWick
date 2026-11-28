@@ -1,21 +1,27 @@
 import { Stack, useFocusEffect, useLocalSearchParams, usePathname, useRouter, type Href } from 'expo-router';
-import { useCallback, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, View, useWindowDimensions, type ScrollViewInstance } from 'react-native';
 import { SymbolView } from 'expo-symbols';
+import { Image } from 'expo-image';
+import Animated, { FadeInDown, FadeInUp, useAnimatedStyle, useReducedMotion, useSharedValue, withTiming } from 'react-native-reanimated';
 
 import { ThemedText } from '@/components/themed-text';
 import { BookCover } from '@/components/book-cover';
 import { ThemedView } from '@/components/themed-view';
 import { ReadingNoteEditor } from '@/components/reading-note-editor';
-import { Button, IconButton, Surface } from '@/components/ui';
+import { Button, IconButton } from '@/components/ui';
 import { useTheme } from '@/hooks/use-theme';
-import { getBookById, type Book } from '@/features/library/book-repository';
+import { formatReadingTime, getBookById, setBookFavorite, type Book } from '@/features/library/book-repository';
 import { deleteFavoriteQuote, getFavoriteQuotes, type FavoriteQuote } from '@/features/library/quote-repository';
 import { deleteReadingBookmark, getReadingBookmarks, type ReadingBookmark } from '@/features/library/bookmark-repository';
 import { deleteReadingNote, getReadingNotes, updateReadingNote, type ReadingNote } from '@/features/library/reading-note-repository';
 import { deleteReadingHighlight, getReadingHighlights, HIGHLIGHT_COLORS, updateReadingHighlightColor, type ReadingHighlight } from '@/features/library/highlight-repository';
 import { openBook as openLibraryBook } from '@/features/library/open-book';
+import { getBookReadingActivity, type BookReadingDay } from '@/features/profile/profile-repository';
 import { Borders, Layout, Radii, Spacing, Typography } from '@/theme';
+
+type DetailSection = 'resumen' | 'actividad' | 'recuerdos' | 'diario';
+type MemoryKind = 'Frase' | 'Highlight' | 'Nota' | 'Marcador';
 
 export default function BookDetailScreen() {
   const theme = useTheme();
@@ -24,6 +30,13 @@ export default function BookDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { width, height } = useWindowDimensions();
   const landscape = width > height;
+  const reduceMotion = useReducedMotion();
+  const scrollRef = useRef<ScrollViewInstance>(null);
+  const sectionOffsets = useRef<Partial<Record<DetailSection, number>>>({});
+  const progressValue = useSharedValue(0);
+  const [activeSection, setActiveSection] = useState<DetailSection>('resumen');
+  const [selectedActivityDate, setSelectedActivityDate] = useState<string | null>(null);
+  const [memoryFilter, setMemoryFilter] = useState<MemoryKind | null>(null);
   const [book, setBook] = useState<Book | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -41,6 +54,29 @@ export default function BookDetailScreen() {
   const [highlights, setHighlights] = useState<ReadingHighlight[]>([]);
   const [highlightsLoading, setHighlightsLoading] = useState(true);
   const [highlightsError, setHighlightsError] = useState<string | null>(null);
+  const [readingDays, setReadingDays] = useState<BookReadingDay[]>([]);
+  const [showFullCollection, setShowFullCollection] = useState(false);
+
+  useEffect(() => {
+    if (!book) return;
+    progressValue.value = reduceMotion
+      ? book.readingProgress
+      : withTiming(book.readingProgress, { duration: 560 });
+  }, [book?.id, book?.readingProgress, reduceMotion]);
+
+  const animatedProgressStyle = useAnimatedStyle(() => ({
+    width: `${Math.max(0, Math.min(progressValue.value, 1)) * 100}%`,
+  }));
+
+  const scrollToSection = (section: DetailSection) => {
+    setActiveSection(section);
+    const y = sectionOffsets.current[section];
+    if (y != null) scrollRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: !reduceMotion });
+  };
+
+  const recordSectionOffset = (section: DetailSection) => (event: { nativeEvent: { layout: { y: number } } }) => {
+    sectionOffsets.current[section] = event.nativeEvent.layout.y;
+  };
 
   useFocusEffect(useCallback(() => {
     let active = true;
@@ -53,6 +89,7 @@ export default function BookDetailScreen() {
     setBookmarks([]);
     setNotes([]);
     setHighlights([]);
+    setReadingDays([]);
     void getBookById(id).then(async (result) => {
       if (active) {
         setBook(result);
@@ -70,6 +107,8 @@ export default function BookDetailScreen() {
         catch { if (active) setNotesError('No se pudieron cargar las notas de lectura.'); }
         try { const items = await getReadingHighlights(result.id); if (active) setHighlights(items); }
         catch { if (active) setHighlightsError('No se pudieron cargar los highlights.'); }
+        try { const days = await getBookReadingActivity(result.id); if (active) setReadingDays(days); }
+        catch { if (active) setReadingDays([]); }
       }
     }).catch(() => { if (active) setError('No se pudieron cargar los datos del libro.'); })
       .finally(() => { if (active) { setLoading(false); setQuotesLoading(false); setBookmarksLoading(false); setNotesLoading(false); setHighlightsLoading(false); } });
@@ -184,6 +223,16 @@ export default function BookDetailScreen() {
     setNoteEditorVisible(false);
   };
 
+  const toggleFavorite = async () => {
+    if (!book) return;
+    const next = !book.isFavorite;
+    setBook({ ...book, isFavorite: next });
+    try { await setBookFavorite(book.id, next); }
+    catch { setBook({ ...book, isFavorite: !next }); setError('No se pudo actualizar el favorito.'); }
+  };
+
+  const chartDays = readingDays.slice(0, width < 420 ? 7 : 14);
+
   return <ThemedView style={styles.screen}>
     <Stack.Screen options={{ title: book?.title ?? 'Libro', headerShown: false }} />
     <View style={[styles.topBar, { borderBottomColor: theme.divider }]}>
@@ -192,160 +241,149 @@ export default function BookDetailScreen() {
       <ThemedText type="smallBold" themeColor="textSecondary" numberOfLines={1}>Ficha del libro</ThemedText>
       <View style={styles.topBarSpacer} />
     </View>
-    {loading ? <View style={styles.loading}><ActivityIndicator color={theme.accent} /></View> : book ? <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+    {book ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.contextNav} style={[styles.contextNavScroll, { borderBottomColor: theme.divider }]}>
+      {([
+        ['resumen', 'Resumen', 'book.closed'],
+        ['actividad', 'Actividad', 'chart.bar'],
+        ['recuerdos', 'Recuerdos', 'quote.opening'],
+        ['diario', 'Diario', 'calendar']
+      ] as const).map(([section, label, symbol]) => <Pressable key={section} accessibilityRole="button" accessibilityState={{ selected: activeSection === section }}
+        onPress={() => scrollToSection(section)} style={[styles.contextNavItem, activeSection === section && { borderBottomColor: theme.accent, borderBottomWidth: 2 }]}>
+        <SymbolView name={{ ios: symbol, android: section === 'resumen' ? 'menu_book' : section === 'actividad' ? 'bar_chart' : section === 'recuerdos' ? 'format_quote' : 'calendar_month', web: section === 'resumen' ? 'menu_book' : section === 'actividad' ? 'bar_chart' : section === 'recuerdos' ? 'format_quote' : 'calendar_month' }} size={15} tintColor={activeSection === section ? theme.accent : theme.textMuted} />
+        <ThemedText type="small" style={{ color: activeSection === section ? theme.text : theme.textMuted }}>{label}</ThemedText>
+      </Pressable>)}
+    </ScrollView> : null}
+    {loading ? <View style={styles.loading}><ActivityIndicator color={theme.accent} /></View> : book ? <ScrollView ref={scrollRef} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}
+      onScroll={(event) => {
+        // Keep the section tab in sync with the last section whose top has passed
+        // the reading viewport's anchor line.
+        const y = event.nativeEvent.contentOffset.y + 100;
+        const ordered: DetailSection[] = ['resumen', 'actividad', 'recuerdos', 'diario'];
+        let current: DetailSection = 'resumen';
+        for (const section of ordered) if (sectionOffsets.current[section] != null && sectionOffsets.current[section]! <= y) current = section;
+        if (current !== activeSection) setActiveSection(current);
+      }} scrollEventThrottle={120}>
       <View style={[styles.content, landscape && styles.landscapeContent]}>
-        <View style={[styles.hero, landscape && styles.landscapeHero]}>
-          <BookCover book={book} style={styles.cover} />
+        <View onLayout={recordSectionOffset('resumen')} style={[styles.hero, landscape && styles.landscapeHero]}>
+          <BookCover book={book} style={[styles.cover, landscape ? styles.coverLandscape : styles.coverPortrait]} />
           <View style={styles.heroCopy}>
+            <ThemedText type="small" themeColor="accentSoft" style={styles.eyebrow}>TU BIBLIOTECA · {book.readingState === 'finished' ? 'TERMINADO' : book.readingState === 'reading' ? 'EN LECTURA' : 'PENDIENTE'}</ThemedText>
             <ThemedText type="title" style={styles.title}>{book.title.replace(/\.pdf$/i, '')}</ThemedText>
             {book.author ? <ThemedText type="subtitle" themeColor="textSecondary" style={styles.author}>{book.author}</ThemedText> : null}
-            {book.genre ? <View style={[styles.genreChip, { backgroundColor: theme.surfaceSelected }]}><ThemedText type="small" themeColor="accentSoft" numberOfLines={1}>{book.genre}</ThemedText></View> : null}
-            {book.series || book.volumeNumber ? <ThemedText type="small" themeColor="textMuted">
-              {[book.series, book.volumeNumber ? `Vol. ${book.volumeNumber}` : null].filter(Boolean).join(' · ')}
-            </ThemedText> : null}
+            <ThemedText type="small" themeColor="textMuted">Añadido el {new Date(book.dateAdded).toLocaleDateString('es-CO')}</ThemedText>
+            {book.genre || book.series || book.volumeNumber ? <ThemedText type="small" themeColor="textMuted">{[book.genre, book.series, book.volumeNumber ? `Vol. ${book.volumeNumber}` : null].filter(Boolean).join(' · ')}</ThemedText> : null}
             <View style={styles.primaryActions}>
-              <Button title="Leer" onPress={readBook} icon={<SymbolView name={{ ios: 'book.fill', android: 'menu_book', web: 'menu_book' }} size={18} tintColor={theme.textOnAccent} />} />
-              <Button title="Editar libro" variant="secondary" onPress={editBook} />
+              <Button title={book.readingState === 'pending' ? 'Comenzar a leer' : 'Continuar leyendo'} onPress={readBook} icon={<SymbolView name={{ ios: 'book.fill', android: 'menu_book', web: 'menu_book' }} size={18} tintColor={theme.textOnAccent} />} />
+              <IconButton accessibilityLabel={book.isFavorite ? 'Quitar de favoritos' : 'Añadir a favoritos'} variant="subtle" onPress={() => void toggleFavorite()}
+                icon={<SymbolView name={{ ios: book.isFavorite ? 'heart.fill' : 'heart', android: book.isFavorite ? 'favorite' : 'favorite_border', web: book.isFavorite ? 'favorite' : 'favorite_border' }} size={21} tintColor={book.isFavorite ? theme.accentSoft : theme.textSecondary} />} />
+              <Button title="Editar" variant="secondary" onPress={editBook} />
             </View>
           </View>
         </View>
 
-        <Surface variant="subtle" style={styles.progressCard}>
-          <View style={styles.progressHeading}><ThemedText type="smallBold">Tu lectura · {book.readingState === 'finished' ? 'Terminado' : book.readingState === 'reading' ? 'Leyendo' : 'Pendiente'}</ThemedText><ThemedText type="small" themeColor="accentSoft">{Math.round(book.readingProgress * 100)}%</ThemedText></View>
-          <View style={[styles.progressTrack, { backgroundColor: theme.progressTrack }]}>
-            <View style={[styles.progressFill, { width: `${Math.round(book.readingProgress * 100)}%`, backgroundColor: theme.progress }]} />
-          </View>
-          {book.totalPages ? <ThemedText type="small" themeColor="textMuted">Página {book.currentPage} de {book.totalPages}</ThemedText> : null}
-        </Surface>
-
-        {book.description ? <View style={styles.section}>
-          <ThemedText type="subtitle">Sobre este libro</ThemedText>
+        {book.description ? <View style={[styles.section, styles.descriptionSection]}>
+          <ThemedText type="subtitle">Sobre esta historia</ThemedText>
           <ThemedText themeColor="textSecondary" style={styles.description}>{book.description}</ThemedText>
         </View> : null}
 
-        <View style={styles.section}>
-          <View style={styles.sectionHeading}>
-            <ThemedText type="subtitle">Frases guardadas</ThemedText>
-            {quotes.length ? <ThemedText type="small" themeColor="textMuted">{quotes.length} {quotes.length === 1 ? 'favorita' : 'favoritas'}</ThemedText> : null}
+        <View style={[styles.progressSection, { borderTopColor: theme.divider, borderBottomColor: theme.divider }]}>
+          <ThemedText type="subtitle">Tu recorrido</ThemedText>
+          <View style={styles.statsRow}>
+            <Animated.View entering={reduceMotion ? undefined : FadeInUp.duration(250)} style={styles.stat}><ThemedText style={styles.statValue}>{Math.round(book.readingProgress * 100)}%</ThemedText><ThemedText type="small" themeColor="textMuted">completado</ThemedText></Animated.View>
+            <Animated.View entering={reduceMotion ? undefined : FadeInUp.duration(250).delay(35)} style={styles.stat}><ThemedText style={styles.statValue}>{book.currentPage}{book.totalPages ? <ThemedText style={styles.statTotal}> / {book.totalPages}</ThemedText> : null}</ThemedText><ThemedText type="small" themeColor="textMuted">página</ThemedText></Animated.View>
+            <Animated.View entering={reduceMotion ? undefined : FadeInUp.duration(250).delay(70)} style={styles.stat}><ThemedText style={styles.statValue}>{formatReadingTime(book.readingTimeSeconds ?? 0, true)}</ThemedText><ThemedText type="small" themeColor="textMuted">tiempo acumulado</ThemedText></Animated.View>
+            <Animated.View entering={reduceMotion ? undefined : FadeInUp.duration(250).delay(105)} style={styles.stat}><ThemedText style={styles.statValueSmall}>{book.lastOpenedAt ? new Date(book.lastOpenedAt).toLocaleDateString('es-CO') : '—'}</ThemedText><ThemedText type="small" themeColor="textMuted">última sesión</ThemedText></Animated.View>
           </View>
-          {quotesLoading ? <View style={styles.quotesLoading}><ActivityIndicator color={theme.accent} /></View> : quotes.length ? quotes.map((quote) => (
-            <Surface key={quote.id} variant="subtle" style={[styles.quoteCard, { borderColor: theme.border }]}>
-              <View style={styles.quoteCardHeading}>
-                <View style={[styles.quoteIcon, { backgroundColor: theme.surfaceSelected }]}>
-                  <SymbolView name={{ ios: 'quote.opening', android: 'format_quote', web: 'format_quote' }} size={19} tintColor={theme.accentSoft} />
-                </View>
-                <View style={styles.quoteActions}>
-                  {quote.page != null ? <Pressable accessibilityRole="button" accessibilityLabel={`Ir a la página ${quote.page}`} onPress={() => openQuotePage(quote)} style={[styles.pageChip, { backgroundColor: theme.surfaceSelected }]}>
-                    <ThemedText type="small" themeColor="accentSoft">Página {quote.page}</ThemedText>
-                  </Pressable> : null}
-                  <IconButton accessibilityLabel="Eliminar frase" variant="subtle" onPress={() => removeQuote(quote)}
-                    icon={<SymbolView name={{ ios: 'trash', android: 'delete_outline', web: 'delete_outline' }} size={18} tintColor={theme.textMuted} />} />
-                </View>
-              </View>
-              <ThemedText style={[styles.quoteText, { color: theme.text }]}>{quote.text}</ThemedText>
-              {quote.note ? <View style={[styles.noteBox, { borderLeftColor: theme.accentSoft, backgroundColor: theme.backgroundSecondary }]}>
-                <ThemedText type="smallBold" themeColor="accentSoft">Tu nota</ThemedText>
-                <ThemedText type="small" themeColor="textSecondary" style={styles.quoteNote}>{quote.note}</ThemedText>
+          <View style={[styles.progressTrack, { backgroundColor: theme.progressTrack }]}><Animated.View style={[styles.progressFill, animatedProgressStyle, { backgroundColor: theme.progress }]} /></View>
+        </View>
+
+        <View onLayout={recordSectionOffset('actividad')} style={styles.section}>
+          <View style={styles.activityHeading}>
+            <View style={styles.sectionHeading}><ThemedText type="subtitle">Ritmo de lectura</ThemedText><ThemedText type="small" themeColor="textMuted">páginas con primera visita · día</ThemedText></View>
+            <Image source={require('../../../assets/images/Hyggewick_icon.png')} contentFit="contain" accessibilityLabel="HyggeWick leyendo" style={styles.mascot} />
+          </View>
+          {readingDays.length >= 2 ? <View style={styles.chart}>
+            {chartDays.slice().reverse().map((day) => {
+              const max = Math.max(...chartDays.map((item) => item.pages.length), 1);
+              const isPeak = day.pages.length === max;
+              const selected = selectedActivityDate === day.date;
+              const entering = reduceMotion ? undefined : FadeInDown.duration(320).delay(chartDays.length > 8 ? 0 : readingDays.indexOf(day) * 35);
+              return <Animated.View key={day.date} entering={entering} style={styles.chartDay}>
+                <ThemedText type="small" themeColor="textMuted">{day.pages.length}</ThemedText>
+                <Pressable accessibilityRole="button" accessibilityLabel={`${day.pages.length} páginas registradas el ${new Date(`${day.date}T12:00:00`).toLocaleDateString('es-CO')}`} accessibilityState={{ selected }}
+                  onPress={() => setSelectedActivityDate(selected ? null : day.date)} style={[styles.chartTrack, { backgroundColor: theme.progressTrack }]}>
+                  <View style={[styles.chartBar, { height: `${Math.max(8, (day.pages.length / max) * 100)}%`, backgroundColor: isPeak ? theme.accent : theme.accentLavender }]} />
+                  {selected ? <View style={[styles.chartSelection, { backgroundColor: theme.accent }]} /> : null}
+                </Pressable>
+                <ThemedText type="small" themeColor="textMuted">{width < 420 ? day.date.slice(8) : day.date.slice(5).replace('-', '/')}</ThemedText>
+              </Animated.View>;
+            })}
+          </View> : <ThemedText type="small" themeColor="textMuted" style={styles.quietNote}>{readingDays.length === 1 ? 'Hay actividad registrada en un día. El gráfico aparecerá cuando haya más días de lectura.' : 'La actividad aparecerá aquí cuando avances páginas desde el lector. Solo se muestran visitas guardadas.'}</ThemedText>}
+          {selectedActivityDate ? (() => {
+            const selected = readingDays.find((day) => day.date === selectedActivityDate);
+            return selected ? <ThemedText type="small" themeColor="textSecondary" style={styles.chartDetail}>{new Date(`${selected.date}T12:00:00`).toLocaleDateString('es-CO', { day: 'numeric', month: 'long', year: 'numeric' })} · {selected.pages.length} {selected.pages.length === 1 ? 'página registrada' : 'páginas registradas'} (págs. {selected.pages.slice(0, 8).join(', ')}{selected.pages.length > 8 ? '…' : ''})</ThemedText> : null;
+          })() : null}
+          {readingDays.length >= 2 ? <ThemedText type="small" themeColor="textMuted">Cada página se cuenta una vez, en el primer día que se registró.</ThemedText> : null}
+        </View>
+
+        <View onLayout={recordSectionOffset('diario')} style={styles.section}>
+          <ThemedText type="subtitle">Diario de lectura</ThemedText>
+          {readingDays.length ? <View style={[styles.timeline, { borderLeftColor: theme.divider }]}>
+            {readingDays.slice(0, 8).map((day, index) => <Animated.View key={day.date} entering={reduceMotion ? undefined : FadeInUp.duration(260).delay(Math.min(index * 30, 150))} style={styles.timelineEntry}>
+              <View style={[styles.timelineDot, { backgroundColor: theme.accentSoft }]} />
+              <View style={styles.timelineCopy}><ThemedText type="smallBold">{new Date(`${day.date}T12:00:00`).toLocaleDateString('es-CO', { day: 'numeric', month: 'long', year: 'numeric' })}</ThemedText><ThemedText type="small" themeColor="textMuted">{day.pages.length} {day.pages.length === 1 ? 'página con primera visita' : 'páginas con primera visita'} · última: {Math.max(...day.pages)}</ThemedText></View>
+            </Animated.View>)}
+          </View>
+          : <ThemedText type="small" themeColor="textMuted" style={styles.quietNote}>Tu recorrido aparecerá aquí cuando haya páginas visitadas guardadas. Todavía no hay suficientes registros.</ThemedText>}
+          {readingDays.length ? <ThemedText type="small" themeColor="textMuted">El historial actual guarda la primera visita de cada página; no incluye sesiones ni duración diaria.</ThemedText> : null}
+        </View>
+
+        <View onLayout={recordSectionOffset('recuerdos')} style={[styles.section, { borderTopColor: theme.divider, borderTopWidth: Borders.subtle, paddingTop: Spacing.four }]}>
+          <View style={styles.sectionHeading}><ThemedText type="subtitle">Lo que esta historia ha dejado en ti</ThemedText></View>
+          <View style={styles.memoryCounts}>
+            {([
+              ['Frase', 'Frases', quotes.length, 'quote.opening', 'format_quote', '#D8B96E'],
+              ['Highlight', 'Highlights', highlights.length, 'highlighter', 'ink_highlighter', '#91AA91'],
+              ['Nota', 'Notas', notes.length, 'pencil', 'edit_note', '#C4AAEE'],
+              ['Marcador', 'Marcadores', bookmarks.length, 'bookmark', 'bookmark', '#9B6FE0'],
+            ] as const).map(([kind, label, count, iosSymbol, nativeSymbol, color], index) => <View key={kind} style={styles.memoryCountCell}>
+              {index > 0 ? <View style={[styles.memoryCountDivider, { backgroundColor: theme.divider }]} /> : null}
+              <Pressable accessibilityRole="button" accessibilityLabel={`${count} ${label.toLowerCase()}`} accessibilityState={{ selected: memoryFilter === kind }}
+                onPress={() => { setShowFullCollection(true); setMemoryFilter(memoryFilter === kind ? null : kind); }} style={styles.memoryCountButton}>
+                <SymbolView name={{ ios: iosSymbol, android: nativeSymbol, web: nativeSymbol }} size={16} tintColor={color} />
+                <ThemedText style={[styles.memoryCountValue, { color: theme.text }]}>{count}</ThemedText>
+                <ThemedText type="small" style={{ color: theme.textMuted }}>{label}</ThemedText>
+              </Pressable>
+            </View>)}
+          </View>
+          {quotesLoading || highlightsLoading || notesLoading || bookmarksLoading ? <View style={styles.quotesLoading}><ActivityIndicator color={theme.accent} /></View> : null}
+          {!quotesLoading && !highlightsLoading && !notesLoading && !bookmarksLoading && !quotes.length && !highlights.length && !notes.length && !bookmarks.length ? <ThemedText type="small" themeColor="textMuted" style={styles.quietNote}>Tus fragmentos, ideas y páginas guardadas se reunirán aquí mientras lees.</ThemedText> : null}
+          {(() => {
+            const latest: Array<{ kind: MemoryKind; date: string; text: string; page: number | null; run: () => void; remove: () => void; change?: () => void }> = [
+              ...quotes.map((item) => ({ kind: 'Frase' as const, date: item.createdAt, text: item.text, page: item.page, run: () => openQuotePage(item), remove: () => removeQuote(item) })),
+              ...highlights.map((item) => ({ kind: 'Highlight' as const, date: item.createdAt, text: item.text, page: item.page, run: () => openHighlight(item), remove: () => removeHighlight(item), change: () => changeHighlightColor(item) })),
+              ...notes.map((item) => ({ kind: 'Nota' as const, date: item.updatedAt, text: item.content, page: item.page, run: () => { setEditingNote(item); setNoteEditorVisible(true); }, remove: () => removeNote(item) })),
+              ...bookmarks.map((item) => ({ kind: 'Marcador' as const, date: item.createdAt, text: item.name, page: item.page, run: () => openBookmarkPage(item), remove: () => removeBookmark(item) })),
+            ].sort((a, b) => b.date.localeCompare(a.date));
+            const filtered = memoryFilter ? latest.filter((item) => item.kind === memoryFilter) : latest;
+            const visible = showFullCollection ? filtered : filtered.slice(0, 1);
+            return <>
+              {visible.map((item, index) => <View key={`${item.kind}-${item.date}-${index}`} style={[styles.memoryEntry, { borderTopColor: theme.divider }]}>
+                <Pressable accessibilityRole="button" onPress={item.run} style={styles.memoryText}>
+                  <ThemedText type="small" themeColor="accentSoft">{item.kind}{item.page ? ` · Página ${item.page}` : ''}</ThemedText>
+                  <ThemedText style={styles.memoryPreview} numberOfLines={showFullCollection ? 4 : 3}>{item.text}</ThemedText>
+                </Pressable>
+                {showFullCollection && item.change ? <IconButton accessibilityLabel="Cambiar color del highlight" variant="subtle" onPress={item.change} icon={<SymbolView name={{ ios: 'highlighter', android: 'ink_highlighter', web: 'ink_highlighter' }} size={18} tintColor={theme.accentSoft} />} /> : null}
+                {showFullCollection ? <IconButton accessibilityLabel={`Eliminar ${item.kind.toLowerCase()}`} variant="subtle" onPress={item.remove} icon={<SymbolView name={{ ios: 'trash', android: 'delete_outline', web: 'delete_outline' }} size={18} tintColor={theme.textMuted} />} /> : null}
+              </View>)}
+              {filtered.length === 0 && memoryFilter ? <ThemedText type="small" themeColor="textMuted" style={styles.quietNote}>Todavía no hay recuerdos de esta categoría.</ThemedText> : null}
+              {latest.length ? <View style={styles.collectionActions}>
+                <Pressable accessibilityRole="button" onPress={() => { setMemoryFilter(null); setShowFullCollection((value) => !value); }} style={styles.collectionAction}><ThemedText type="smallBold" themeColor="accentSoft">{showFullCollection ? 'Mostrar último recuerdo' : `Ver colección completa · ${latest.length}`}</ThemedText></Pressable>
+                {memoryFilter ? <Pressable accessibilityRole="button" onPress={() => setMemoryFilter(null)} style={styles.collectionAction}><ThemedText type="small" themeColor="textMuted">Ver todas las categorías</ThemedText></Pressable> : null}
               </View> : null}
-            </Surface>
-          )) : <Surface variant="subtle" style={styles.quotesEmpty}>
-            <View style={[styles.quoteIcon, { backgroundColor: theme.surfaceSelected }]}>
-              <SymbolView name={{ ios: 'quote.opening', android: 'format_quote', web: 'format_quote' }} size={21} tintColor={theme.accentSoft} />
-            </View>
-            <ThemedText type="smallBold" style={styles.quoteTitle}>Un rincón para tus palabras favoritas</ThemedText>
-            <ThemedText type="small" themeColor="textMuted" style={styles.quoteCopy}>Mientras lees, toca el símbolo de cita para guardar un fragmento y una nota personal.</ThemedText>
-          </Surface>}
-          {quotesError ? <ThemedText type="small" themeColor="error" accessibilityRole="alert">{quotesError}</ThemedText> : null}
-        </View>
-
-        <View style={styles.section}>
-          <View style={styles.sectionHeading}>
-            <ThemedText type="subtitle">Highlights</ThemedText>
-            {highlights.length ? <ThemedText type="small" themeColor="textMuted">{highlights.length}</ThemedText> : null}
-          </View>
-          {highlightsLoading ? <View style={styles.quotesLoading}><ActivityIndicator color={theme.accent} /></View> : highlights.length ? highlights.map((highlight) => (
-            <Surface key={highlight.id} variant="subtle" style={[styles.highlightCard, { borderColor: theme.border }]}>
-              <Pressable accessibilityRole="button" accessibilityLabel={`Abrir highlight de la página ${highlight.page}`} onPress={() => openHighlight(highlight)} style={styles.highlightInfo}>
-                <ThemedText numberOfLines={3} style={styles.highlightText}>{highlight.text}</ThemedText>
-                <ThemedText type="small" themeColor="textMuted">Página {highlight.page} · {new Date(highlight.createdAt).toLocaleDateString('es-CO')}</ThemedText>
-              </Pressable>
-              <View style={styles.highlightActions}>
-                <Pressable accessibilityRole="button" accessibilityLabel="Cambiar color del highlight" onPress={() => changeHighlightColor(highlight)} style={[styles.highlightColor, { backgroundColor: highlight.color }]} />
-                <IconButton accessibilityLabel="Eliminar highlight" variant="subtle" onPress={() => removeHighlight(highlight)}
-                  icon={<SymbolView name={{ ios: 'trash', android: 'delete_outline', web: 'delete_outline' }} size={18} tintColor={theme.textMuted} />} />
-              </View>
-            </Surface>
-          )) : <Surface variant="subtle" style={styles.quotesEmpty}>
-            <View style={[styles.quoteIcon, { backgroundColor: theme.surfaceSelected }]}>
-              <SymbolView name={{ ios: 'highlighter', android: 'border_color', web: 'border_color' }} size={20} tintColor={theme.accentSoft} />
-            </View>
-            <ThemedText type="smallBold" style={styles.quoteTitle}>Un rastro de tus lecturas</ThemedText>
-            <ThemedText type="small" themeColor="textMuted" style={styles.quoteCopy}>Los fragmentos resaltados aparecerán aquí y podrás volver a su página.</ThemedText>
-          </Surface>}
-          {highlightsError ? <ThemedText type="small" themeColor="error" accessibilityRole="alert">{highlightsError}</ThemedText> : null}
-        </View>
-
-        <View style={styles.section}>
-          <View style={styles.sectionHeading}>
-            <ThemedText type="subtitle">Marcadores de lectura</ThemedText>
-            {bookmarks.length ? <ThemedText type="small" themeColor="textMuted">{bookmarks.length}</ThemedText> : null}
-          </View>
-          {bookmarksLoading ? <View style={styles.quotesLoading}><ActivityIndicator color={theme.accent} /></View> : bookmarks.length ? bookmarks.map((bookmark) => (
-            <Surface key={bookmark.id} variant="subtle" style={[styles.bookmarkCard, { borderColor: theme.border }]}>
-              <Pressable accessibilityRole="button" accessibilityLabel={`Ir a ${bookmark.name}, página ${bookmark.page}`}
-                onPress={() => openBookmarkPage(bookmark)} style={styles.bookmarkInfo}>
-                <ThemedText type="smallBold" numberOfLines={2}>{bookmark.name}</ThemedText>
-                <ThemedText type="small" themeColor="textMuted">Página {bookmark.page} · {new Date(bookmark.createdAt).toLocaleDateString('es-CO')}</ThemedText>
-              </Pressable>
-              <View style={styles.bookmarkActions}>
-                <Pressable accessibilityRole="button" accessibilityLabel={`Ir a la página ${bookmark.page}`} onPress={() => openBookmarkPage(bookmark)} style={[styles.pageChip, { backgroundColor: theme.surfaceSelected }]}>
-                  <ThemedText type="small" themeColor="accentSoft">Ir</ThemedText>
-                </Pressable>
-                <IconButton accessibilityLabel="Eliminar marcador" variant="subtle" onPress={() => removeBookmark(bookmark)}
-                  icon={<SymbolView name={{ ios: 'trash', android: 'delete_outline', web: 'delete_outline' }} size={18} tintColor={theme.textMuted} />} />
-              </View>
-            </Surface>
-          )) : <Surface variant="subtle" style={styles.quotesEmpty}>
-            <View style={[styles.quoteIcon, { backgroundColor: theme.surfaceSelected }]}>
-              <SymbolView name={{ ios: 'bookmark', android: 'bookmark', web: 'bookmark' }} size={21} tintColor={theme.accentSoft} />
-            </View>
-            <ThemedText type="smallBold" style={styles.quoteTitle}>Guarda tu lugar favorito</ThemedText>
-            <ThemedText type="small" themeColor="textMuted" style={styles.quoteCopy}>Desde el lector puedes marcar una página y volver a ella cuando quieras.</ThemedText>
-          </Surface>}
-          {bookmarksError ? <ThemedText type="small" themeColor="error" accessibilityRole="alert">{bookmarksError}</ThemedText> : null}
-        </View>
-
-        <View style={styles.section}>
-          <View style={styles.sectionHeading}>
-            <ThemedText type="subtitle">Notas de lectura</ThemedText>
-            {notes.length ? <ThemedText type="small" themeColor="textMuted">{notes.length}</ThemedText> : null}
-          </View>
-          {notesLoading ? <View style={styles.quotesLoading}><ActivityIndicator color={theme.accent} /></View> : notes.length ? notes.map((note) => (
-            <Surface key={note.id} variant="subtle" style={[styles.readingNoteCard, { borderColor: theme.border }]}>
-              <View style={styles.readingNoteHeading}>
-                <Pressable accessibilityRole="button" accessibilityLabel={`Abrir página ${note.page}`} onPress={() => openNotePage(note)}
-                  style={[styles.pageChip, { backgroundColor: theme.surfaceSelected }]}>
-                  <ThemedText type="small" themeColor="accentSoft">Página {note.page}</ThemedText>
-                </Pressable>
-                <View style={styles.readingNoteActions}>
-                  <IconButton accessibilityLabel="Editar nota" variant="subtle" onPress={() => { setEditingNote(note); setNoteEditorVisible(true); }}
-                    icon={<SymbolView name={{ ios: 'square.and.pencil', android: 'edit_note', web: 'edit_note' }} size={18} tintColor={theme.accentSoft} />} />
-                  <IconButton accessibilityLabel="Eliminar nota" variant="subtle" onPress={() => removeNote(note)}
-                    icon={<SymbolView name={{ ios: 'trash', android: 'delete_outline', web: 'delete_outline' }} size={18} tintColor={theme.textMuted} />} />
-                </View>
-              </View>
-              {note.title ? <ThemedText type="smallBold" numberOfLines={2}>{note.title}</ThemedText> : null}
-              <ThemedText themeColor="textSecondary" numberOfLines={3} style={styles.readingNotePreview}>{note.content}</ThemedText>
-              <ThemedText type="small" themeColor="textMuted">Editada el {new Date(note.updatedAt).toLocaleDateString('es-CO')}</ThemedText>
-            </Surface>
-          )) : <Surface variant="subtle" style={styles.quotesEmpty}>
-            <View style={[styles.quoteIcon, { backgroundColor: theme.surfaceSelected }]}>
-              <SymbolView name={{ ios: 'text.book.closed', android: 'auto_stories', web: 'auto_stories' }} size={21} tintColor={theme.accentSoft} />
-            </View>
-            <ThemedText type="smallBold" style={styles.quoteTitle}>Un margen para tus ideas</ThemedText>
-            <ThemedText type="small" themeColor="textMuted" style={styles.quoteCopy}>Las reflexiones que escribas en el lector quedarán reunidas aquí.</ThemedText>
-          </Surface>}
-          {notesError ? <ThemedText type="small" themeColor="error" accessibilityRole="alert">{notesError}</ThemedText> : null}
+            </>;
+          })()}
+          {[quotesError, highlightsError, notesError, bookmarksError].filter(Boolean).map((message, index) => <ThemedText key={index} type="small" themeColor="error" accessibilityRole="alert">{message}</ThemedText>)}
         </View>
       </View>
     </ScrollView> : <View style={styles.errorState}>
@@ -362,24 +400,53 @@ export default function BookDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, minWidth: 0 }, topBar: { minHeight: 52, paddingHorizontal: Spacing.two, flexDirection: 'row', alignItems: 'center', gap: Spacing.two, borderBottomWidth: Borders.subtle },
-  topBarSpacer: { width: Layout.standardTouchTarget }, scrollContent: { flexGrow: 1, padding: Spacing.four },
-  content: { width: '100%', maxWidth: 860, alignSelf: 'center', gap: Spacing.five }, landscapeContent: { maxWidth: 980 },
-  hero: { flexDirection: 'row', alignItems: 'center', gap: Spacing.four }, landscapeHero: { alignItems: 'flex-start' },
-  cover: { width: 124, minWidth: 124, alignSelf: 'flex-start', borderRadius: Radii.large, flexShrink: 0 },
-  heroCopy: { flex: 1, minWidth: 0, gap: Spacing.two }, title: { fontSize: 27, lineHeight: 32 }, author: { fontSize: 17, lineHeight: 23 },
-  genreChip: { alignSelf: 'flex-start', paddingHorizontal: Spacing.two, paddingVertical: Spacing.one, borderRadius: Radii.pill },
-  primaryActions: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two, marginTop: Spacing.one },
-  progressCard: { gap: Spacing.two }, progressHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, progressTrack: { height: 5, borderRadius: 3, overflow: 'hidden' }, progressFill: { height: '100%', borderRadius: 3 },
-  section: { gap: Spacing.two }, description: { lineHeight: 25 }, sectionHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: Spacing.two },
-  quotesEmpty: { alignItems: 'center', paddingVertical: Spacing.four, paddingHorizontal: Spacing.three, gap: Spacing.two, borderRadius: Radii.large },
-  quotesLoading: { minHeight: 100, alignItems: 'center', justifyContent: 'center' },
-  quoteCard: { gap: Spacing.three, padding: Spacing.three, borderRadius: Radii.large }, quoteCardHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, quoteActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one },
-  bookmarkCard: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two, padding: Spacing.three, borderRadius: Radii.large }, bookmarkInfo: { flex: 1, minWidth: 0, gap: Spacing.one }, bookmarkActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one },
-  highlightCard: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two, padding: Spacing.three, borderRadius: Radii.large }, highlightInfo: { flex: 1, minWidth: 0, gap: Spacing.one }, highlightText: { fontFamily: Typography.literary.fontFamily, fontSize: 16, lineHeight: 24 }, highlightActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one }, highlightColor: { width: 20, height: 20, borderRadius: Radii.pill, borderWidth: Borders.subtle, borderColor: 'rgba(255,255,255,0.5)' },
-  readingNoteCard: { gap: Spacing.two, padding: Spacing.three, borderRadius: Radii.large }, readingNoteHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: Spacing.two }, readingNoteActions: { flexDirection: 'row', alignItems: 'center' }, readingNotePreview: { lineHeight: 22 },
-  quoteIcon: { width: 38, height: 38, borderRadius: Radii.pill, alignItems: 'center', justifyContent: 'center' }, pageChip: { borderRadius: Radii.pill, paddingHorizontal: Spacing.two, paddingVertical: Spacing.one },
-  quoteText: { fontFamily: Typography.literary.fontFamily, fontSize: 17, lineHeight: 26 }, noteBox: { borderLeftWidth: 2, borderRadius: Radii.medium, padding: Spacing.two, gap: Spacing.one }, quoteNote: { lineHeight: 21 }, quoteTitle: { textAlign: 'center' }, quoteCopy: { textAlign: 'center', maxWidth: 420 },
-  loading: { flex: 1, alignItems: 'center', justifyContent: 'center' }, errorState: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.five, gap: Spacing.three },
+  screen: { flex: 1, minWidth: 0 },
+  topBar: { minHeight: 50, paddingHorizontal: Spacing.two, flexDirection: 'row', alignItems: 'center', gap: Spacing.two, borderBottomWidth: Borders.subtle },
+  topBarSpacer: { width: Layout.standardTouchTarget },
+  contextNavScroll: { maxHeight: 43, borderBottomWidth: Borders.subtle, flexGrow: 0 },
+  contextNav: { minWidth: '100%', paddingHorizontal: Spacing.four, flexDirection: 'row', alignItems: 'stretch', justifyContent: 'center', gap: Spacing.five },
+  contextNavItem: { minHeight: 42, flexDirection: 'row', alignItems: 'center', gap: Spacing.one, borderBottomWidth: 2, borderBottomColor: 'transparent', paddingHorizontal: Spacing.one },
+  scrollContent: { flexGrow: 1, paddingHorizontal: Spacing.four, paddingVertical: Spacing.five },
+  content: { width: '100%', maxWidth: 880, alignSelf: 'center', gap: Spacing.five },
+  landscapeContent: { maxWidth: 1080, gap: Spacing.six },
+  hero: { flexDirection: 'row', alignItems: 'center', gap: Spacing.four },
+  landscapeHero: { alignItems: 'center', gap: Spacing.five },
+  cover: { width: 124, minWidth: 124, alignSelf: 'flex-start', borderRadius: Radii.medium, flexShrink: 0 },
+  coverPortrait: { width: 94, minWidth: 94 }, coverLandscape: { width: 146, minWidth: 146 },
+  heroCopy: { flex: 1, minWidth: 0, gap: Spacing.one },
+  title: { fontFamily: Typography.literary.fontFamily, fontSize: 29, lineHeight: 34, marginTop: 1 },
+  author: { fontSize: 17, lineHeight: 22 }, eyebrow: { letterSpacing: 1.5, fontSize: 10 },
+  primaryActions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: Spacing.two, marginTop: Spacing.two },
+  section: { gap: Spacing.two }, descriptionSection: { maxWidth: 760 }, description: { lineHeight: 25 },
+  sectionHeading: { flexDirection: 'row', alignItems: 'baseline', flexWrap: 'wrap', gap: Spacing.two },
+  activityHeading: { minHeight: 58, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.two },
+  mascot: { width: 58, height: 58, flexShrink: 0 },
+  progressSection: { borderTopWidth: Borders.subtle, borderBottomWidth: Borders.subtle, paddingVertical: Spacing.three, gap: Spacing.three },
+  statsRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: Spacing.three, columnGap: Spacing.two },
+  stat: { flexGrow: 1, flexBasis: 132, gap: 2 },
+  statValue: { fontFamily: Typography.literary.fontFamily, fontSize: 26, lineHeight: 32 },
+  statValueSmall: { fontFamily: Typography.literary.fontFamily, fontSize: 18, lineHeight: 32 },
+  statTotal: { fontSize: 15, color: '#9B97AA' },
+  progressTrack: { height: 3, overflow: 'hidden' }, progressFill: { height: '100%' },
+  chart: { height: 144, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', gap: Spacing.two, paddingTop: Spacing.two },
+  chartDay: { flex: 1, minWidth: 0, height: 130, justifyContent: 'flex-end', alignItems: 'center', gap: 4 },
+  chartTrack: { width: '68%', maxWidth: 28, flex: 1, justifyContent: 'flex-end', overflow: 'hidden', position: 'relative' },
+  chartBar: { width: '100%', minHeight: 3 }, chartSelection: { position: 'absolute', bottom: 0, left: -3, right: -3, height: 2 },
+  chartDetail: { lineHeight: 20 }, quietNote: { lineHeight: 22, maxWidth: 640 },
+  timeline: { borderLeftWidth: 1, marginLeft: 4, paddingLeft: Spacing.three, gap: Spacing.three },
+  timelineEntry: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.two, marginLeft: -21 },
+  timelineDot: { width: 7, height: 7, marginTop: 6 }, timelineCopy: { gap: 3 },
+  memoryCounts: { flexDirection: 'row', alignItems: 'stretch', justifyContent: 'space-between', marginVertical: Spacing.one },
+  memoryCountCell: { flex: 1, flexDirection: 'row', justifyContent: 'center' },
+  memoryCountDivider: { width: 1, alignSelf: 'stretch', marginRight: Spacing.two },
+  memoryCountButton: { minWidth: 0, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: Spacing.one, paddingHorizontal: 2 },
+  memoryCountValue: { fontFamily: Typography.literary.fontFamily, fontSize: 21, lineHeight: 25 },
+  quotesLoading: { minHeight: 64, alignItems: 'center', justifyContent: 'center' },
+  memoryEntry: { borderTopWidth: Borders.subtle, paddingTop: Spacing.three, flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
+  memoryText: { flex: 1, minWidth: 0, gap: Spacing.one }, memoryPreview: { fontFamily: Typography.literary.fontFamily, fontSize: 17, lineHeight: 25 },
+  collectionActions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: Spacing.three },
+  collectionAction: { alignSelf: 'flex-start', paddingVertical: Spacing.two },
+  loading: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  errorState: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.five, gap: Spacing.three },
   errorNotice: { position: 'absolute', bottom: Spacing.three, left: Spacing.three, right: Spacing.three, padding: Spacing.three, borderRadius: Radii.medium },
 });

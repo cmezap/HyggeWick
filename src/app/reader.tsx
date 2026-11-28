@@ -1,8 +1,8 @@
 import { type HighlightTappedEventPayload, type OnErrorEventPayload, type OnPageChangedEventPayload, type SelectionUnavailableEventPayload, type TextSelectionCancelledEventPayload, type TextSelectionEventPayload } from '@kishannareshpal/expo-pdf';
 import { File } from 'expo-file-system';
-import { router, useLocalSearchParams, type Href } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from 'react-native';
+import { router, useFocusEffect, useLocalSearchParams, type Href } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, AppState, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, TextInput, View, useWindowDimensions } from 'react-native';
 import { SymbolView } from 'expo-symbols';
 
 import { ThemedText } from '@/components/themed-text';
@@ -11,7 +11,7 @@ import { ReadingNoteEditor } from '@/components/reading-note-editor';
 import { ReaderPdfView, type PdfChapterItem, type ReaderLoadCompleteEvent } from '@/components/reader-pdf-view';
 import { Button, IconButton } from '@/components/ui';
 import { useTheme } from '@/hooks/use-theme';
-import { getBookById, updateLastOpenedAt, updateReadingProgress, type Book } from '@/features/library/book-repository';
+import { addBookReadingTime, formatReadingTime, getBookById, updateLastOpenedAt, updateReadingProgress, type Book } from '@/features/library/book-repository';
 import { addFavoriteQuote, getFavoriteQuotes, type FavoriteQuote } from '@/features/library/quote-repository';
 import { getReadingBookmarkAtPage, getReadingBookmarks, saveReadingBookmark, type ReadingBookmark } from '@/features/library/bookmark-repository';
 import { createReadingNote, getReadingNotes, type ReadingNote } from '@/features/library/reading-note-repository';
@@ -99,6 +99,70 @@ export default function ReaderScreen() {
   const manualAdvanceTarget = useRef<number | null>(null);
   const readerTouchStart = useRef<{ x: number; y: number } | null>(null);
   const readerTouchMoved = useRef(false);
+  const [screenFocused, setScreenFocused] = useState(true);
+  const [appActive, setAppActive] = useState(AppState.currentState === 'active');
+  const [displayReadingSeconds, setDisplayReadingSeconds] = useState(0);
+  const activeBookIdRef = useRef<string | null>(null);
+  const sessionStartedAtRef = useRef<number | null>(null);
+  const baseReadingSecondsRef = useRef(0);
+
+  useFocusEffect(useCallback(() => {
+    setScreenFocused(true);
+    return () => setScreenFocused(false);
+  }, []));
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      setAppActive(nextState === 'active');
+    });
+    return () => subscription.remove();
+  }, []);
+
+  const flushReadingTime = useCallback(() => {
+    const startedAt = sessionStartedAtRef.current;
+    const activeId = activeBookIdRef.current;
+    if (!startedAt || !activeId) return;
+    const now = Date.now();
+    // Persist only elapsed foreground time; the interval and lifecycle cleanup
+    // both call this so time is saved even when the reader is backgrounded.
+    const delta = Math.floor((now - startedAt) / 1000);
+    if (delta > 0) {
+      sessionStartedAtRef.current = startedAt + delta * 1000;
+      baseReadingSecondsRef.current += delta;
+      setDisplayReadingSeconds(baseReadingSecondsRef.current);
+      void addBookReadingTime(activeId, delta);
+    }
+  }, []);
+
+  const isTimerRunning = loadState === 'ready' && Boolean(book?.id) && screenFocused && appActive;
+
+  useEffect(() => {
+    if (!isTimerRunning || !book?.id) {
+      flushReadingTime();
+      sessionStartedAtRef.current = null;
+      return;
+    }
+    activeBookIdRef.current = book.id;
+    sessionStartedAtRef.current = Date.now();
+    const flushInterval = setInterval(flushReadingTime, 15000);
+    return () => {
+      clearInterval(flushInterval);
+      flushReadingTime();
+      sessionStartedAtRef.current = null;
+    };
+  }, [isTimerRunning, book?.id, flushReadingTime]);
+
+  useEffect(() => {
+    if (!controlsVisible || !isTimerRunning) return;
+    const updateTick = () => {
+      const startedAt = sessionStartedAtRef.current;
+      const liveDelta = startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0;
+      setDisplayReadingSeconds(baseReadingSecondsRef.current + liveDelta);
+    };
+    updateTick();
+    const tickInterval = setInterval(updateTick, 1000);
+    return () => clearInterval(tickInterval);
+  }, [controlsVisible, isTimerRunning]);
 
   useEffect(() => {
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
@@ -125,6 +189,8 @@ export default function ReaderScreen() {
 
   const returnToOrigin = () => {
     flushPendingProgress();
+    flushReadingTime();
+    sessionStartedAtRef.current = null;
     if (origin?.startsWith('/') && !origin.startsWith('//') && !origin.includes('..')) {
       router.replace(origin as Href);
     } else if (router.canGoBack()) {
@@ -164,6 +230,8 @@ export default function ReaderScreen() {
         return;
       }
       setBook(result);
+      baseReadingSecondsRef.current = result.readingTimeSeconds ?? 0;
+      setDisplayReadingSeconds(baseReadingSecondsRef.current);
       setHighlights([]);
       setBookmarks([]);
       setQuotes([]);
@@ -556,6 +624,14 @@ export default function ReaderScreen() {
         <IconButton accessibilityLabel="Volver" variant="subtle" onPress={returnToOrigin}
           icon={<SymbolView name={{ ios: 'chevron.left', android: 'arrow_back', web: 'arrow_back' }} size={21} tintColor={theme.accent} />} />
         <ThemedText numberOfLines={1} style={styles.title}>{book?.title ?? 'Lector'}</ThemedText>
+        {loadState === 'ready' ? (
+          <View style={[styles.timerPill, { backgroundColor: theme.surfaceSelected, borderColor: theme.border }]}>
+            <SymbolView name={{ ios: 'clock', android: 'schedule', web: 'schedule' }} size={13} tintColor={theme.accentSoft} />
+            <ThemedText type="small" style={{ color: theme.accentSoft, fontVariant: ['tabular-nums'] }}>
+              {formatReadingTime(displayReadingSeconds, true)}
+            </ThemedText>
+          </View>
+        ) : null}
         {loadState === 'ready' ? <IconButton accessibilityLabel="Buscar texto en el libro" variant="subtle"
           onPress={() => Alert.alert('Búsqueda de texto', 'Próximamente podrás buscar palabras dentro del PDF.')}
           icon={<SymbolView name={{ ios: 'magnifyingglass', android: 'search', web: 'search' }} size={20} tintColor={theme.accentSoft} />} /> : null}
@@ -1168,6 +1244,7 @@ const styles = StyleSheet.create({
   header: { position: 'absolute', top: 0, left: 0, right: 0, minHeight: 58, paddingHorizontal: Spacing.two, flexDirection: 'row', alignItems: 'center', gap: Spacing.two, borderBottomWidth: Borders.subtle, zIndex: 20, elevation: 20 },
   headerLandscape: { minHeight: 48 },
   title: { flex: 1, textAlign: 'center' },
+  timerPill: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: Spacing.two, paddingVertical: 4, borderRadius: 999, borderWidth: Borders.subtle },
   readingArea: { flex: 1, minHeight: 0, position: 'relative', backgroundColor: '#090711' },
   pdf: { flex: 1 },
   state: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.four, gap: Spacing.three },
