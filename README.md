@@ -57,3 +57,7 @@ La interfaz web puede iniciarse con `npm run web`, pero no incluye el lector PDF
 - [`docs/BUILD_5.0_PROGRESS.md`](docs/BUILD_5.0_PROGRESS.md): arquitectura de selección PDF, highlights, perfil, QA y pendientes de dispositivo.
 - [`docs/BUILD_4.0_PROGRESS.md`](docs/BUILD_4.0_PROGRESS.md): cambios anteriores de navegación y persistencia del lector; su bloqueo de selección quedó resuelto en Build 5.0.
 - [`src/features/library/PERSISTENCE.md`](src/features/library/PERSISTENCE.md): esquema, migraciones, archivos locales y reglas de persistencia.
+
+## Git y publicación de cambios
+
+El remoto `origin` debe usar SSH (`git@github.com:cmezap/HyggeWick.git`). Las subidas de cambios se realizan mediante SSH con la clave configurada en el equipo; usa `git push origin master` para publicar la rama principal. No cambies el remoto a HTTPS para subir cambios.
